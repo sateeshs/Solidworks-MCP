@@ -172,6 +172,42 @@ class SwFileTypes:
 # Selection Types
 # ============================================================================
 
+# ============================================================================
+# Mate Alignment
+# ============================================================================
+
+class SwMateAlign(IntEnum):
+    """Mate alignment options for AddMate3"""
+    swMateAlignALIGNED = 0
+    swMateAlignANTI_ALIGNED = 1
+    swMateAlignCLOSEST = 2
+
+
+# ============================================================================
+# Component Suppression State
+# ============================================================================
+
+class SwComponentState(IntEnum):
+    """Component suppression states"""
+    swComponentResolved = 0
+    swComponentSuppressed = 1
+    swComponentLightweight = 2
+    swComponentFullyResolved = 3
+
+
+# ============================================================================
+# Add Component Flags
+# ============================================================================
+
+class SwAddComponentConfigOptions(IntEnum):
+    """Options for IAssemblyDoc::AddComponent5"""
+    swAddComponentConfigOptions_CurrentSelectedConfig = 0
+
+
+# ============================================================================
+# Selection Types
+# ============================================================================
+
 class SwSelectType:
     """Entity selection types for SelectByID2"""
     FACE = "FACE"
