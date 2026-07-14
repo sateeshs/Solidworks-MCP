@@ -9,3 +9,34 @@ solidworks_mcp.log
 dist/
 build/
 *.egg-info/
+
+# STEP files (too large for git, ~5GB)
+*.step
+*.stp
+*.STEP
+*.STP
+
+# SolidWorks files
+*.sldprt
+*.sldasm
+*.slddrw
+*.swp
+
+# Part profiles are committed (small JSON), but raw geometry is not
+# profiles/gobilda/ — YES, commit these
+# C:\goBILDA\           — NO, local only on Windows
+
+# IDE
+.vscode/
+.idea/
+
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+
+# mypy
+.mypy_cache/
+
+# pytest
+.pytest_cache/

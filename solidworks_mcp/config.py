@@ -59,6 +59,18 @@ class SolidWorksConfig:
     # View capture defaults
     capture_width: int = 1920
     capture_height: int = 1080
+
+    # HTTP/SSE server (for cross-machine access)
+    server_host: str = "0.0.0.0"
+    server_port: int = 8585
+    server_api_key: str = ""
+
+    # goBILDA parts library
+    gobilda_steps_path: str = ""  # Path to STEP files (e.g., C:\goBILDA)
+    gobilda_profiles_path: str = ""  # Path to JSON profiles (e.g., profiles/gobilda)
+
+    # Output directory for assemblies
+    output_path: str = ""  # e.g., C:\Robots
     
     def __post_init__(self):
         """Validate configuration after initialization"""
