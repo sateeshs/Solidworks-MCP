@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "solidworks-mcp"
+version = "4.0.0"
+description = "MCP servers for SolidWorks automation with FTC/FRC robotics and goBILDA parts integration"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Samsaam Ali Baig"},
+    {name = "Sateesh Seetharamaiah"},
+]
+
+dependencies = [
+    "mcp>=1.0.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+windows = [
+    "pywin32>=306",
+]
+analysis = [
+    "cadquery>=2.4.0",
+]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+    "ruff>=0.4.0",
+    "mypy>=1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires SolidWorks running on Windows",
+    "analysis: requires CadQuery for STEP analysis",
+]
+addopts = "-m 'not integration and not analysis' --tb=short"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_return_any = true
+warn_unused_configs = true
