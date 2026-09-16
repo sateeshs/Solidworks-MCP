@@ -8,27 +8,23 @@ from .base import SolidWorksAutomation as _BaseAutomation
 from .documents import DocumentOperations
 from .sketches import SketchOperations
 from .features import FeatureOperations
+from .assemblies import AssemblyOperations
+from .patterns import PatternOperations
 
 
-class SolidWorksAutomation(_BaseAutomation, DocumentOperations, 
-                           SketchOperations, FeatureOperations):
+class SolidWorksAutomation(_BaseAutomation, DocumentOperations,
+                           SketchOperations, FeatureOperations,
+                           AssemblyOperations, PatternOperations):
     """
     Complete SolidWorks automation class
-    
+
     Combines all operation mixins:
     - Base: Connection, document access, utilities
     - Documents: Create, open, save, close documents
     - Sketches: Create sketches, draw 2D geometry
     - Features: Extrude, cut, fillet, chamfer
-    
-    Example:
-        sw = SolidWorksAutomation()
-        sw.connect()
-        sw.create_new_part()
-        sw.create_sketch("Front")
-        sw.draw_circle(0, 0, 25)
-        sw.extrude_sketch(10)
-        sw.save_document("C:/Parts/MyPart.sldprt")
+    - Assemblies: Insert components, add mates, inspect tree
+    - Patterns: Linear and circular component patterns
     """
     pass
 
@@ -36,6 +32,8 @@ class SolidWorksAutomation(_BaseAutomation, DocumentOperations,
 __all__ = [
     "SolidWorksAutomation",
     "DocumentOperations",
-    "SketchOperations", 
+    "SketchOperations",
     "FeatureOperations",
+    "AssemblyOperations",
+    "PatternOperations",
 ]

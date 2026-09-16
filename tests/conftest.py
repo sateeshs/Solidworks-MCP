@@ -6,7 +6,14 @@ sample profile data for Parts Intelligence testing.
 
 import json
 import os
+import sys
 import tempfile
+from unittest.mock import MagicMock
+
+# Stub Windows-only modules so solidworks_mcp.automation can be imported on Linux.
+for _mod in ("win32com", "win32com.client", "win32com.client.dynamic", "pythoncom",
+             "win32gui", "win32ui", "win32con"):
+    sys.modules.setdefault(_mod, MagicMock())
 
 import pytest
 
