@@ -371,25 +371,30 @@ class DocumentOperations:
                     return r
             
             docs = []
-            doc = self._sw_app.GetFirstDocument()
-            
+            doc = self._sw_app.GetFirstDocument
+            if callable(doc):
+                doc = doc()
+
             while doc:
                 try:
                     title = doc.GetTitle
                     if callable(title):
                         title = title()
-                    doc_type = doc.GetType()
-                    
+                    doc_type = doc.GetType
+                    if callable(doc_type):
+                        doc_type = doc_type()
+
                     type_names = {1: "Part", 2: "Assembly", 3: "Drawing"}
-                    
+
                     docs.append({
                         "title": title,
                         "type": type_names.get(doc_type, "Unknown")
                     })
                 except:
                     pass
-                
-                doc = doc.GetNext()
+
+                next_doc = doc.GetNext
+                doc = next_doc() if callable(next_doc) else next_doc
             
             return self._result(True, f"{len(docs)} document(s) open",
                               SwErrors.swSuccess, {"documents": docs})

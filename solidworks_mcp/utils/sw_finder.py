@@ -222,13 +222,24 @@ class SolidWorksFinder:
                     logger.info(f"Found {template_type} template: {template_path}")
                     return template_path
         
-        # Search ProgramData
+        # Search ProgramData (explicit known paths first)
         for pdata_path in cls.PROGRAMDATA_TEMPLATE_PATHS:
             template_path = os.path.join(pdata_path, template_name)
             if os.path.exists(template_path):
                 logger.info(f"Found {template_type} template in ProgramData: {template_path}")
                 return template_path
-        
+
+        # Fall back to scanning for any "SOLIDWORKS <year>" folder, so newer
+        # releases (e.g. 2026+) are found without needing a code update.
+        programdata_sw = r"C:\ProgramData\SolidWorks"
+        if os.path.isdir(programdata_sw):
+            for entry in sorted(os.listdir(programdata_sw), reverse=True):
+                if entry.upper().startswith("SOLIDWORKS "):
+                    template_path = os.path.join(programdata_sw, entry, "templates", template_name)
+                    if os.path.exists(template_path):
+                        logger.info(f"Found {template_type} template in ProgramData: {template_path}")
+                        return template_path
+
         logger.warning(f"Template not found: {template_type}")
         return None
     
