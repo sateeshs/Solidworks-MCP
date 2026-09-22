@@ -413,7 +413,136 @@ class SketchOperations:
             
             return self._result(True, "Centerline created",
                               SwErrors.swSuccess)
-            
+
         except Exception as e:
             logger.error(f"Draw centerline error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swSketchError)
+
+    def draw_spline(self, points: List[Tuple[float, float]] = None,
+                    unit: str = None) -> Dict:
+        """
+        Draw a spline through a list of 2D points in the active sketch
+
+        Args:
+            points: List of (x, y) tuples the spline passes through (min 2)
+            unit: Unit for coordinates
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            if not points or len(points) < 2:
+                return self._result(False, "Spline needs at least 2 points",
+                                  SwErrors.swInvalidInput)
+
+            # SketchManager.CreateSpline2 takes a flat array of doubles
+            # (x1, y1, z1, x2, y2, z2, ...). VERIFIED live (2026-09-22): a
+            # plain Python list or array.array('d') both marshal to a VARIANT
+            # array of VARIANTs over this dynamic-dispatch binding, which SW
+            # silently rejects (returns None, no exception). An explicit
+            # VT_ARRAY | VT_R8 VARIANT is required to get a real double
+            # SAFEARRAY that CreateSpline2 accepts.
+            coords = []
+            for x, y in points:
+                coords.append(self._units.to_meters(x, unit))
+                coords.append(self._units.to_meters(y, unit))
+                coords.append(0.0)
+            point_array = win32com.client.VARIANT(
+                pythoncom.VT_ARRAY | pythoncom.VT_R8, coords
+            )
+
+            spline = doc.SketchManager.CreateSpline2(point_array, False)
+
+            if spline is None:
+                return self._result(False, "Failed - ensure sketch is active",
+                                  SwErrors.swSketchError)
+
+            unit_str = unit or self._units.default_unit.value
+
+            return self._result(True, f"Spline through {len(points)} points",
+                              SwErrors.swSuccess,
+                              {"point_count": len(points), "unit": unit_str})
+
+        except Exception as e:
+            logger.error(f"Draw spline error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swSketchError)
+
+    def draw_slot(self, x1: float = -25, y1: float = 0,
+                 x2: float = 25, y2: float = 0,
+                 width: float = 10, unit: str = None) -> Dict:
+        """
+        Draw a straight slot (two end arcs + two tangent lines) between two
+        center points
+
+        Args:
+            x1, y1: Start center point
+            x2, y2: End center point
+            width: Slot width (diameter of the rounded end caps)
+            unit: Unit for coordinates
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            x1_m = self._units.to_meters(x1, unit)
+            y1_m = self._units.to_meters(y1, unit)
+            x2_m = self._units.to_meters(x2, unit)
+            y2_m = self._units.to_meters(y2, unit)
+            width_m = self._units.to_meters(width, unit)
+
+            if x1_m == x2_m and y1_m == y2_m:
+                return self._result(False, "Slot end points must differ",
+                                  SwErrors.swInvalidInput)
+
+            slot = None
+            method_used = ""
+
+            # Method 1: CreateSketchSlot, 13-param straight-slot signature
+            # (SlotType, XCenter1/2, YCenter1/2, ZCenter1/2, XPoint, YPoint,
+            # ZPoint, Width, CenterToCenter, AddDimensions). XPoint/YPoint
+            # define the slot width via a point on one of the end caps.
+            try:
+                dx, dy = x2_m - x1_m, y2_m - y1_m
+                length = math.sqrt(dx * dx + dy * dy)
+                nx, ny = -dy / length, dx / length
+                px = x1_m + nx * (width_m / 2)
+                py = y1_m + ny * (width_m / 2)
+
+                slot = doc.SketchManager.CreateSketchSlot(
+                    0,                  # SlotType: 0 = straight slot
+                    x1_m, y1_m, 0,
+                    x2_m, y2_m, 0,
+                    px, py, 0,
+                    width_m,
+                    False,              # CenterToCenter
+                    False               # AddDimensions
+                )
+                if slot:
+                    method_used = "CreateSketchSlot_13p"
+            except Exception as e:
+                logger.debug(f"CreateSketchSlot (13p) failed: {e}")
+
+            if slot is None:
+                return self._result(False,
+                    "Slot creation failed - ensure sketch is active "
+                    "(requires SolidWorks 2015+ for CreateSketchSlot)",
+                    SwErrors.swSketchError)
+
+            unit_str = unit or self._units.default_unit.value
+
+            return self._result(True,
+                f"Slot: width={width}{unit_str} [{method_used}]",
+                SwErrors.swSuccess,
+                {"width": width, "unit": unit_str, "api_method": method_used})
+
+        except Exception as e:
+            logger.error(f"Draw slot error: {e}\n{traceback.format_exc()}")
             return self._result(False, f"Error: {e}", SwErrors.swSketchError)

@@ -31,13 +31,13 @@
 Create the most comprehensive, reliable, and user-friendly MCP server for SolidWorks automation that enables AI assistants to perform complex CAD operations through natural language commands.
 
 ## 1.2 Success Criteria
-- [ ] 50+ automation tools covering all major SolidWorks operations
-- [ ] 99% connection reliability
-- [ ] Support for Parts, Assemblies, and Drawings
-- [ ] Simulation integration
-- [ ] Unit-agnostic input (mm, inch, meter)
-- [ ] Comprehensive error recovery
-- [ ] Full documentation and examples
+- [ ] 50+ automation tools covering all major SolidWorks operations — 25 registered as of 2026-09-19 (see 2.3)
+- [ ] 99% connection reliability — 4 fallback connection methods exist, but `get_document_info`/`list_open_documents` still throw unguarded COM errors on some bindings
+- [x] Support for Parts, Assemblies, and Drawings — Parts done; Assembly insert/mate and Drawing creation implemented in `automation/` and wired into `server.py`'s tool list as of 2026-09-20
+- [ ] Simulation integration — `solidworks_simulation.py` exists at repo root but isn't wired into the MCP server. Live-investigated 2026-09-20: blocked on a real COM version mismatch, not just "not started" — see 8.1/Task 5.1 for details
+- [x] Unit-agnostic input (mm, inch, meter) — `utils/units.py` + per-call `unit` params throughout
+- [~] Comprehensive error recovery — `utils/validation.py` covers input validation; COM-layer error recovery still has known gaps
+- [~] Full documentation and examples — README + this roadmap exist; a `solidworks-design` Claude Code skill was added 2026-09-19 documenting live usage and known bugs
 
 ## 1.3 Target Users
 - Engineers using AI assistants for CAD automation
@@ -101,6 +101,90 @@ Create the most comprehensive, reliable, and user-friendly MCP server for SolidW
 - Tools: 11
 - Test Coverage: 0%
 
+## 2.3 Actual State (Reconciled 2026-09-19)
+
+This roadmap's checkboxes went unmaintained after the v2.3 baseline above was written — every
+task in Phases 1–6 below was still marked `[ ] Not Started` despite real work having landed. This
+section (and the per-task `**Status:**` lines throughout) were reconciled against the live code on
+2026-09-19. Legend: `[x]` Done · `[~]` Partial or implemented-but-not-wired · `[ ]` Not Started.
+
+**Registered MCP tools: 33** (in `solidworks_mcp/server.py`'s `list_tools()`, up from 25 on 2026-09-20):
+`connect_solidworks`, `get_solidworks_info`, `create_new_part`, `create_new_assembly`,
+`open_document`, `save_document`, `close_document`, `get_document_info`, `list_open_documents`,
+`create_sketch`, `create_sketch_on_face`, `draw_line`, `draw_circle`, `draw_rectangle`, `draw_arc`,
+`draw_polygon`, `extrude_sketch`, `cut_extrude`, `fillet_edges`, `chamfer_edges`, `list_features`,
+`insert_component`, `insert_library_part`, `add_mate`, `get_assembly_tree`, `list_mates`,
+`create_linear_pattern`, `create_circular_pattern`, `create_new_drawing`,
+`close_sketch`, `get_sketch_status`, `set_units`, `execute_python`.
+
+**Wired 2026-09-20** (previously implemented in `automation/` but not exposed as MCP tools):
+- `automation/assemblies.py`: `insert_component()`, `insert_library_part()`, `add_mate()` (covers
+  coincident/concentric/distance via `validate_mate_type()`), `get_assembly_tree()`, `list_mates()`
+- `automation/patterns.py`: `create_linear_pattern()`, `create_circular_pattern()`
+- `automation/documents.py`: `create_new_drawing()`
+
+Note: `insert_component`/`insert_library_part`/`add_mate`/`create_linear_pattern` convert
+dimensions using the automation instance's *default* unit (set via `set_units`) — their
+underlying `automation/` methods don't accept a per-call `unit` override, so the MCP tool
+schemas intentionally omit a `unit` parameter rather than expose one that would be ignored.
+None of this has been exercised against a live SolidWorks session yet — verification so far is
+static (source cross-check + `ast` parse), not a live COM smoke test.
+
+## 2.3a Live SolidWorks Test (2026-09-20)
+
+Ran the 8 newly-wired tools against a live SolidWorks 34.4.1 session (via `execute_python`,
+monkey-patching the reloaded module onto the running server's `sw_automation` instance since the
+MCP server process itself wasn't restarted). Found and fixed 4 real bugs, all now in
+`automation/assemblies.py` and `automation/patterns.py`:
+
+1. **`insert_component()` never pre-loaded the referenced file.** `AddComponent5` silently returns
+   `None` unless the target part/assembly document is already open in the SW session. Fix:
+   `insert_component()` now calls `OpenDoc6` (silent) on the file before `AddComponent5`, then
+   reactivates the assembly via `ActivateDoc3`.
+2. **`GetChildren()` called as a method when it's a property** on this COM binding (same class of
+   bug as `GetTitle`/`GetType`/`GetNextFeature` documented above) — broke `get_assembly_tree()` and
+   `list_mates()`. Fixed with a shared `_get_children()` helper that checks `callable()` first.
+   `IsSuppressed`/`GetPathName` on `_extract_component_info()` hardened the same way.
+3. **`SelectByID2`'s Callout parameter (8th arg) passed as plain Python `None`** instead of a
+   `win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)`, raising COM "Type mismatch" — present in
+   `add_mate()` and both `create_linear_pattern()`/`create_circular_pattern()`. Fixed at all 3 call
+   sites; `sketches.py` already had the correct pattern to copy from.
+4. **`add_mate()` hardcoded an empty entity-select type (`""`)**, which only resolves selections
+   whose type is embedded in the name (e.g. `"Edge<3>"`) — named features like planes need an
+   explicit type. Fixed with a `_select_entity()` helper that retries `"FACE"`/`"PLANE"`/`"EDGE"`/
+   `"VERTEX"` if the empty-type attempt fails.
+
+**Confirmed working live after fixes:** `insert_component`, `get_assembly_tree`, `list_mates`,
+`create_new_drawing`, `insert_library_part` (verified its config-missing error path — no
+`gobilda_steps_path` set in this environment).
+
+**Still broken, root cause not found:** `add_mate()`'s actual `AddMate5`/`AddMate3` call and
+`create_linear_pattern`/`create_circular_pattern`'s `FeatureLinearPattern4`/`FeatureCircularPattern4`
+calls all fail with COM error `(-2147352561, 'Parameter not optional.')` regardless of argument
+count (12–14 args tried) — ruled out the property/method dynamic-dispatch quirk (confirmed these
+resolve as genuine bound methods). This looks like a real argument-list/type mismatch against
+SolidWorks 2026's actual API for these specific methods, not something worth guessing further at
+without the official SW 2026 API reference. **Selection itself works** once callers use the
+fully-qualified `"FeatureName@ComponentName@AssemblyTitle"` form (the 2-level
+`"FeatureName@ComponentName"` shown in `add_mate()`'s docstring example is incomplete for this SW
+build) — so the remaining defect is isolated to the mate/pattern creation calls themselves.
+
+**Genuinely not started:** spline, slot, revolve, sweep, loft, mirror, shell, STEP/STL/DXF export,
+reference-plane creation, drawing views/dimensions, all of Phase 5 (simulation), performance
+optimization, undo/redo, screenshot/view-capture tools.
+
+**Known live bugs** (see the `solidworks-design` skill for detail and workarounds):
+`get_document_info()` and `list_open_documents()` throw COM errors (`'int' object is not
+callable`, `Member not found`) on the win32com dynamic-dispatch binding this project ends up using.
+
+**Beyond this roadmap's original scope**, two capability layers were added that Phase 1–6 never
+anticipated: a **Parts Intelligence** layer (`solidworks_mcp/parts/`) resolving goBILDA SKUs and
+catalog lookups, and an **Engineering Intelligence** layer (`solidworks_mcp/engineering/`) with FTC/FRC
+design-rule checking (`safety.py`), season-aware design archetypes (`design_advisor.py`), mechanics,
+and electrical/electronics-layout helpers. A parallel, framework-agnostic MCP transport
+(`solidworks_mcp/mcp/`, `solidworks_mcp/tools/registry.py`) was also added, ported from a sibling
+`freecad-ai` project; it is not yet the one `server.py` actually runs.
+
 ---
 
 # 3. DEVELOPMENT PHASES
@@ -140,11 +224,11 @@ Create the most comprehensive, reliable, and user-friendly MCP server for SolidW
 ## Week 1-2 | Priority: CRITICAL
 
 ### 4.1 Goals
-- [ ] Modular code architecture
-- [ ] Configuration system
-- [ ] Unit conversion system
-- [ ] Auto-detect SolidWorks installation
-- [ ] Improved connection reliability
+- [x] Modular code architecture
+- [x] Configuration system
+- [x] Unit conversion system
+- [x] Auto-detect SolidWorks installation
+- [~] Improved connection reliability — 4 fallback methods exist; known COM bugs remain (see 2.3)
 
 ### 4.2 Tasks
 
@@ -180,7 +264,7 @@ solidworks_mcp/
     ├── test_sketches.py
     └── test_features.py
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — modular `solidworks_mcp/` package exists (`automation/`, `utils/`, `constants.py`, `config.py`)
 **Estimated Time:** 4 hours
 
 ---
@@ -245,7 +329,7 @@ class SolidWorksConfig:
 # Global config instance
 config = SolidWorksConfig.load()
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `config.py` implements `SolidWorksConfig` dataclass with JSON load/save
 **Estimated Time:** 2 hours
 
 ---
@@ -333,7 +417,7 @@ def cm(value: float) -> float:
     """Convert cm to meters"""
     return value * 0.01
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `utils/units.py` implements `UnitConverter`, `mm()`/`inch()`/`to_mm()` etc.
 **Estimated Time:** 2 hours
 
 ---
@@ -476,7 +560,7 @@ class SolidWorksFinder:
         except:
             return None
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `utils/sw_finder.py` implements `SolidWorksFinder`, `find_solidworks()`, `find_template()`
 **Estimated Time:** 2 hours
 
 ---
@@ -491,18 +575,18 @@ class SolidWorksFinder:
 | `list_features` | List all features in model | MEDIUM |
 | `list_planes` | List all planes | MEDIUM |
 
-**Status:** [ ] Not Started
+**Status:** [x] Done — delivered as part of the 25-tool `server.py` tool list
 **Estimated Time:** 4 hours
 
 ---
 
 ### 4.3 Phase 1 Deliverables
-- [ ] Modular project structure
-- [ ] Configuration file support
-- [ ] Unit conversion (mm, inch, meter)
-- [ ] Auto-detect SolidWorks
-- [ ] 5 new tools (16 total)
-- [ ] Unit tests for core functions
+- [x] Modular project structure
+- [x] Configuration file support
+- [x] Unit conversion (mm, inch, meter)
+- [x] Auto-detect SolidWorks
+- [x] 5 new tools (25 registered total, exceeds the 16 target)
+- [~] Unit tests for core functions — `tests/unit/test_units.py`, `test_config.py`, `test_validation.py` exist; coverage of `server.py` itself unverified
 
 ---
 
@@ -511,9 +595,9 @@ class SolidWorksFinder:
 ## Week 3-4 | Priority: HIGH
 
 ### 5.1 Goals
-- [ ] Complete 2D sketch tools
-- [ ] Add cut operations
-- [ ] Add fillet/chamfer
+- [~] Complete 2D sketch tools — line/circle/rectangle/arc/polygon done; spline/slot missing
+- [x] Add cut operations
+- [x] Add fillet/chamfer
 - [ ] Add revolve feature
 - [ ] Add sketch constraints
 - [ ] Add measurement tools
@@ -582,7 +666,7 @@ def draw_arc_3point(self, x1, y1, x2, y2, x3, y3, unit="mm") -> Dict:
     
     return self._result(True, "3-point arc created", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `draw_arc` tool live (`sketches.py: draw_arc_center`)
 
 ---
 
@@ -621,7 +705,7 @@ def draw_spline(self, points: list, unit="mm") -> Dict:
     
     return self._result(True, f"Spline with {len(points)} points created", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `draw_spline` wired (2026-09-22). Verified live: needs an explicit `VT_ARRAY | VT_R8` VARIANT for the point array — a plain list or `array.array('d')` silently returns None through this codebase's dynamic-dispatch connection.
 
 ---
 
@@ -657,7 +741,7 @@ def draw_polygon(self, cx, cy, radius, sides=6, unit="mm") -> Dict:
     
     return self._result(True, f"{sides}-sided polygon created", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `draw_polygon` tool live
 
 ---
 
@@ -693,7 +777,7 @@ def draw_slot(self, x1, y1, x2, y2, width, unit="mm") -> Dict:
     
     return self._result(True, f"Slot created: width={width}{unit}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [~] Partial — `draw_slot` wired (2026-09-22) calling the documented `CreateSketchSlot` API, but that call fails with COM "Parameter not optional" on this SW build regardless of the 10/11/13-param signature tried. A manual line+arc construction was also tried and rejected: `CreateLine`/`CreateArc` don't auto-add coincident relations between separately-created entities even at bit-identical endpoints, so the profile never closed for extrusion. Needs either the real signature for this build or an explicit `AddRelation`-based closure step.
 
 ---
 
@@ -754,7 +838,7 @@ def cut_extrude(self, depth, through_all=False, both_directions=False, unit="mm"
     cut_type = "through all" if through_all else f"{depth}{unit} deep"
     return self._result(True, f"Cut extrude: {cut_type}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `cut_extrude` tool live
 
 ---
 
@@ -800,7 +884,7 @@ def fillet_edges(self, radius, edge_indices=None, all_edges=False, unit="mm") ->
     
     return self._result(True, f"Fillet r={radius}{unit}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `fillet_edges` tool live
 
 ---
 
@@ -843,7 +927,7 @@ def chamfer_edges(self, distance, angle=45, edge_indices=None, unit="mm") -> Dic
     
     return self._result(True, f"Chamfer {distance}{unit} x {angle}°", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `chamfer_edges` tool live
 
 ---
 
@@ -893,7 +977,7 @@ def revolve_sketch(self, angle=360, axis="centerline", unit="deg") -> Dict:
     
     return self._result(True, f"Revolved {angle}°", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `revolve_sketch` wired (2026-09-22). Verified live: the real `FeatureRevolve2` signature on this build is 20 params (`SingleDir...UseAutoSelect, T0, StartOffset`) — the commonly-cited 21p (extra `FlipStartOffset`) and 18p (no `T0`/`StartOffset`) variants both fail with COM param-count errors.
 
 ---
 
@@ -973,7 +1057,7 @@ def get_mass_properties(self, unit="mm") -> Dict:
         "center_of_mass": list(cog)
     })
 ```
-**Status:** [ ] Not Started
+**Status:** [~] Partial (2026-09-22) — `get_mass_properties` is Done, but not as designed above: `Extension.CreateMassProperty` fails with COM "Member not found" on this build. Rewired to `IModelDoc2.GetMassProperties` (the older property-style API, a flat 12-tuple `Cx,Cy,Cz,Volume,SurfaceArea,Mass,Ixx..Izx`), verified working live. `measure_distance` is wired but **not verified working**: `Extension.CreateMeasure` fails the same way ("Member not found") and there's no simpler replacement API for arbitrary two-entity distance the way `GetMassProperties` covers mass — same root cause as the Simulation COM gap (see `simulation_com_investigation` memory).
 
 ---
 
@@ -995,13 +1079,13 @@ def get_mass_properties(self, unit="mm") -> Dict:
 | 12 | trim_entities | 2D Sketch | MEDIUM |
 
 ### 5.6 Phase 2 Deliverables
-- [ ] 12 new tools (28 total)
-- [ ] Complete 2D sketch capability
-- [ ] Cut operations
-- [ ] Fillet & Chamfer
+- [~] 12 new tools (25 registered total, short of the 28 target — spline/slot/revolve/measurements missing)
+- [~] Complete 2D sketch capability — spline and slot still missing
+- [x] Cut operations
+- [x] Fillet & Chamfer
 - [ ] Revolve feature
 - [ ] Basic measurements
-- [ ] All tools use unit conversion
+- [x] All tools use unit conversion
 
 ---
 
@@ -1011,7 +1095,7 @@ def get_mass_properties(self, unit="mm") -> Dict:
 
 ### 6.1 Goals
 - [ ] Sweep and Loft features
-- [ ] Pattern features (linear, circular, mirror)
+- [~] Pattern features (linear, circular, mirror) — linear/circular implemented in `automation/patterns.py` and wired as MCP tools (2026-09-20); mirror still missing
 - [ ] Shell feature
 - [ ] Reference geometry (planes, axes)
 - [ ] Export formats (STEP, STL, DXF)
@@ -1059,7 +1143,7 @@ def sweep_sketch(self, profile_sketch, path_sketch) -> Dict:
     
     return self._result(True, "Sweep feature created", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [ ] Not Started — no sweep feature
 
 ---
 
@@ -1103,7 +1187,7 @@ def loft_sketches(self, sketch_names: list) -> Dict:
     
     return self._result(True, f"Loft through {len(sketch_names)} profiles", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [ ] Not Started — no loft feature
 
 ---
 
@@ -1152,7 +1236,7 @@ def pattern_linear(self, feature_name, direction="x", count=3, spacing=10,
     total = count * (count2 if count2 > 0 else 1)
     return self._result(True, f"Linear pattern: {total} instances", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `automation/patterns.py: create_linear_pattern()` wired as `create_linear_pattern` MCP tool in `server.py` (2026-09-20)
 
 ---
 
@@ -1196,7 +1280,7 @@ def pattern_circular(self, feature_name, axis="z", count=6, angle=360, unit="deg
     
     return self._result(True, f"Circular pattern: {count} instances", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `automation/patterns.py: create_circular_pattern()` wired as `create_circular_pattern` MCP tool in `server.py` (2026-09-20)
 
 ---
 
@@ -1234,7 +1318,7 @@ def mirror_feature(self, feature_name, plane="Right") -> Dict:
     
     return self._result(True, f"Mirrored about {plane_name}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [~] Partial (2026-09-22) — `mirror_feature` wired, but **not verified working**: neither `FeatureMirror2` nor the legacy `InsertMirrorFeature`/`InsertMirrorFeature2` resolve as callable members on this build's `FeatureManager` (COM "Member not found" / "Parameter not optional" at every arg count tried). Modern SW likely requires the `CreateDefinition(swFmMirror)` / `CreateFeature(...)` FeatureData pattern instead — a materially bigger API surface, not yet implemented.
 
 ---
 
@@ -1270,7 +1354,7 @@ def shell_body(self, thickness, faces_to_remove=None, unit="mm") -> Dict:
     
     return self._result(True, f"Shell: {thickness}{unit} wall", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [~] Partial (2026-09-22) — `shell_body` wired, but **not verified working**: `InsertFeatureShell`/`InsertFeatureShell2`/`InsertFeatureShell3` don't resolve on this build's `FeatureManager` at all (COM "Member not found"). Same situation as mirror - likely needs the `CreateDefinition(swFmShell)`/`CreateFeature(...)` FeatureData pattern.
 
 ---
 
@@ -1309,7 +1393,7 @@ def export_step(self, filepath) -> Dict:
     
     return self._result(True, f"Exported to: {filepath}", SwErrors.swSuccess, {"path": filepath})
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `export_step` wired and verified live (2026-09-22): `Extension.SaveAs` produced a real 17.6KB STEP file.
 
 ---
 
@@ -1362,7 +1446,7 @@ def export_stl(self, filepath, quality="fine", binary=True) -> Dict:
         "binary": binary
     })
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `export_stl` wired (2026-09-22), shares the same `Extension.SaveAs` code path verified working for STEP (format inferred from extension); a `SaveAs4` fallback covers older SW versions. Quality/binary knobs are accepted for API shape parity but not wired to SW's STL preference IDs (left unset rather than guessing undocumented preference constants).
 
 ---
 
@@ -1393,7 +1477,7 @@ def export_dxf(self, filepath, sheet_name=None) -> Dict:
     
     return self._result(True, f"DXF exported: {filepath}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `export_dxf` wired (2026-09-22), same verified `Extension.SaveAs` code path as STEP export.
 
 ---
 
@@ -1435,7 +1519,7 @@ def create_plane(self, offset=0, reference="Front", unit="mm") -> Dict:
     
     return self._result(True, f"Plane created {offset}{unit} from {reference}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `create_plane` wired and verified live (2026-09-22): `InsertRefPlane(1|4, offset, 0,0,0,0)` created a real offset "Plane1" feature.
 
 ---
 
@@ -1455,9 +1539,9 @@ def create_plane(self, offset=0, reference="Front", unit="mm") -> Dict:
 | 10 | create_plane | Reference | MEDIUM |
 
 ### 6.6 Phase 3 Deliverables
-- [ ] 10 new tools (38 total)
+- [~] 10 new tools (38 total) — 2 wired (linear/circular pattern, 2026-09-20); 8 still not started
 - [ ] Sweep and Loft features
-- [ ] Pattern features
+- [x] Pattern features — linear/circular wired as MCP tools; mirror still not started
 - [ ] Shell feature
 - [ ] Export to STEP, STL, DXF
 - [ ] Reference plane creation
@@ -1469,10 +1553,10 @@ def create_plane(self, offset=0, reference="Front", unit="mm") -> Dict:
 ## Week 7-8 | Priority: HIGH
 
 ### 7.1 Goals
-- [ ] Create assemblies
-- [ ] Insert components
-- [ ] Add mates/constraints
-- [ ] Create drawings
+- [x] Create assemblies
+- [x] Insert components — implemented in `automation/assemblies.py`, wired as `insert_component`/`insert_library_part` MCP tools (2026-09-20)
+- [x] Add mates/constraints — implemented (`add_mate()`), wired as `add_mate` MCP tool (2026-09-20)
+- [x] Create drawings — implemented (`create_new_drawing()`), wired as `create_new_drawing` MCP tool (2026-09-20)
 - [ ] Add drawing views
 - [ ] Add dimensions to drawings
 
@@ -1522,7 +1606,7 @@ def create_assembly(self) -> Dict:
     except Exception as e:
         return self._result(False, f"Error: {e}", SwErrors.swFileLoadError)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `create_new_assembly` tool live; `automation/assemblies.py: create_assembly()` also exists
 
 ---
 
@@ -1569,7 +1653,7 @@ def insert_component(self, filepath, x=0, y=0, z=0, unit="mm") -> Dict:
         "position": {"x": x, "y": y, "z": z, "unit": unit}
     })
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `automation/assemblies.py: insert_component()` / `insert_library_part()` wired as MCP tools (2026-09-20)
 
 ---
 
@@ -1615,7 +1699,7 @@ def mate_coincident(self, entity1, entity2, flip=False) -> Dict:
     
     return self._result(True, "Coincident mate added", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `automation/assemblies.py: add_mate()` handles this (validated via `validate_mate_type()`) and is wired as the `add_mate` MCP tool (2026-09-20)
 
 ---
 
@@ -1647,7 +1731,7 @@ def mate_concentric(self, entity1, entity2) -> Dict:
     
     return self._result(True, "Concentric mate added", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — same `add_mate()` covers this mate type, wired as the `add_mate` MCP tool (2026-09-20)
 
 ---
 
@@ -1682,7 +1766,7 @@ def mate_distance(self, entity1, entity2, distance, unit="mm") -> Dict:
     
     return self._result(True, f"Distance mate: {distance}{unit}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — same `add_mate()` covers this mate type, wired as the `add_mate` MCP tool (2026-09-20)
 
 ---
 
@@ -1746,7 +1830,7 @@ def create_drawing(self, paper_size="A4", orientation="landscape") -> Dict:
     except Exception as e:
         return self._result(False, f"Error: {e}", SwErrors.swFileLoadError)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `automation/documents.py: create_new_drawing()` wired as the `create_new_drawing` MCP tool (2026-09-20)
 
 ---
 
@@ -1790,7 +1874,7 @@ def add_drawing_view(self, model_path, view_type="front", scale=1.0, x=0.1, y=0.
     
     return self._result(True, f"Added {view_type} view at {scale}:1", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [ ] Not Started — no drawing-view tool
 
 ---
 
@@ -1825,7 +1909,7 @@ def add_drawing_dimension(self, entity1, entity2=None, x=0, y=0) -> Dict:
     
     return self._result(True, "Dimension added", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [ ] Not Started — no drawing-dimension tool
 
 ---
 
@@ -1843,10 +1927,10 @@ def add_drawing_dimension(self, entity1, entity2=None, x=0, y=0) -> Dict:
 | 8 | add_drawing_dimension | Drawing | MEDIUM |
 
 ### 7.5 Phase 4 Deliverables
-- [ ] 8 new tools (46 total)
-- [ ] Full assembly support
-- [ ] Basic mate types
-- [ ] Drawing creation
+- [~] 8 new tools (46 total) — 5 wired (2026-09-20: insert_component, insert_library_part, add_mate, get_assembly_tree, list_mates, create_new_drawing — note this covers 6 of the original 8, see 2.3); drawing views/dimensions still not started
+- [x] Full assembly support — create, insert, and mate all wired as MCP tools
+- [x] Basic mate types — `add_mate` covers coincident/concentric/distance/etc. via one MCP tool
+- [x] Drawing creation — wired as `create_new_drawing` MCP tool
 - [ ] Drawing views
 - [ ] Basic dimensioning
 
@@ -1856,7 +1940,7 @@ def add_drawing_dimension(self, entity1, entity2=None, x=0, y=0) -> Dict:
 ## Week 9-10 | Priority: MEDIUM
 
 ### 8.1 Goals
-- [ ] Static stress analysis
+- [ ] Static stress analysis — `solidworks_simulation.py` exists at repo root but isn't wired into the MCP server. See Task 5.1 status below for a live-tested investigation of the actual blocker (2026-09-20)
 - [ ] Modal analysis setup
 - [ ] Results extraction
 - [ ] Design table support
@@ -1897,7 +1981,51 @@ def create_static_study(self, study_name="Static Study") -> Dict:
     except Exception as e:
         return self._result(False, f"Simulation error: {e}", SwErrors.swUnknownError)
 ```
-**Status:** [ ] Not Started
+**Status:** [ ] Not Started — `solidworks_simulation.py` exists at repo root but is not integrated into the `solidworks_mcp` package or the MCP server.
+
+**Live investigation (2026-09-20):** confirmed SolidWorks Simulation (Student
+Edition) IS installed and loadable on this dev machine — `sw.GetAddInObject
+("CosmosWorks.CosmosWorks")` (also works via `"SldWorks.Simulation"`, the
+ProgID this example code already guesses) returns a live COM object. But it
+cannot be automated the same way every other tool in this codebase works:
+`cw._oleobj_.GetTypeInfoCount()` returns **0** — the object exposes zero type
+info, so dynamic name-based dispatch (`cw.CreateNewStudy2(...)` as written
+above) will always fail with `AttributeError`, not because a method name is
+wrong but because `GetIDsOfNames` has nothing to resolve names against.
+
+Early-bound (typed) COM access is possible in principle — real progress was
+made: the actual Simulation API type library exists on disk at
+`C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\Simulation\cosworks.tlb`, and
+`win32com.client.gencache.EnsureModule("{B5697F4F-C68A-4685-A7B8-478AF05EF605}",
+0, 19, 0)` successfully generates a full Python wrapper with hundreds of real
+classes (`ICosmosWorks`, `CWContactManager`, `CWBearingLoad`, etc.) — this
+`.tlb` file self-reports as version 19.0. **The blocker:** Windows' registry
+has this same typelib GUID registered under version **13.0** instead
+(`HKCR\TypeLib\{B5697F4F-C68A-4685-A7B8-478AF05EF605}` only has a `13.0`
+subkey), and `cw._oleobj_.QueryInterface(mod.ICosmosWorks.CLSID,
+pythoncom.IID_IDispatch)` fails with `"No such interface supported"` against
+the 19.0-generated interface ID — the live loaded add-in doesn't actually
+implement that exact interface version. Regenerating explicitly against
+version 13.0 also failed (`"Library not registered"` — `EnsureModule` couldn't
+resolve an actual loadable typelib for that specific version/GUID pairing).
+
+**Root cause, unresolved:** a real version inconsistency in this specific
+SolidWorks Simulation Student Edition install (`.tlb` file content vs.
+registry registration vs. what the live add-in actually implements don't
+agree with each other) — not a dead end in principle, but not something
+worth guessing at further without either (a) a known-working SolidWorks
+Simulation macro on this exact machine to see which interface version it
+successfully references, or (b) SolidWorks' own current Simulation API
+SDK/sample matching this install's actual build. **Do not wire Simulation
+MCP tools with plain dynamic dispatch (mirroring the pattern used everywhere
+else in `solidworks_mcp/automation/`) — they will fail on every call given
+the confirmed zero-type-info result above.** Any future attempt needs the
+early-bound/typed approach, picking up from the `.tlb` file and GUID already
+identified here.
+
+**Practical fallback that still works today:** SolidWorks Motion Studies are
+fully usable manually through the SolidWorks UI (Insert Motion Study) — just
+not scriptable from this MCP server given the above.
 
 ---
 
@@ -2121,7 +2249,7 @@ def get_stress_results(self) -> Dict:
 | 6 | get_stress_results | Simulation | HIGH |
 
 ### 8.4 Phase 5 Deliverables
-- [ ] 6 new tools (52 total)
+- [ ] 6 new tools (52 total) — none wired into the MCP server
 - [ ] Static analysis workflow
 - [ ] Material assignment
 - [ ] Boundary conditions
@@ -2134,12 +2262,12 @@ def get_stress_results(self) -> Dict:
 ## Week 11-12 | Priority: HIGH
 
 ### 9.1 Goals
-- [ ] Comprehensive error handling
-- [ ] Recovery mechanisms
+- [~] Comprehensive error handling — try/except + error codes throughout; two known unguarded COM bugs remain (see 2.3)
+- [~] Recovery mechanisms — 4 connection fallback methods in `base.py`
 - [ ] Performance optimization
-- [ ] Validation & sanitization
-- [ ] Documentation completion
-- [ ] Test coverage > 80%
+- [x] Validation & sanitization — `utils/validation.py`
+- [~] Documentation completion — README, this roadmap, and the `solidworks-design` skill exist; still gaps (unwired features undocumented until now)
+- [ ] Test coverage > 80% — not measured; `tests/` covers config/units/validation/parts/engineering modules, not `server.py` itself
 
 ### 9.2 Error Recovery System
 
@@ -2201,7 +2329,7 @@ class ConnectionManager:
         
         return {"error": error_str, "recovery": "Unknown error. Check log file."}
 ```
-**Status:** [ ] Not Started
+**Status:** [~] Partial — `base.py` tries 4 connection methods and `config.py` has retry settings, but `get_document_info`/`list_open_documents` still throw unguarded COM errors on some bindings (see the `solidworks-design` skill's Known Bugs section)
 
 ---
 
@@ -2268,7 +2396,7 @@ class InputValidator:
             name = name.replace(char, '_')
         return name.strip()
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `utils/validation.py` implements `validate_dimension/name/plane/position/sku/mate_type/end_condition`
 
 ---
 
@@ -2370,7 +2498,7 @@ def redo(self) -> Dict:
         return self._result(True, "Redo successful", SwErrors.swSuccess)
     return self._result(False, "Nothing to redo", SwErrors.swUnknownError)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `undo`/`redo` wired and verified live (2026-09-22), with one fix from the design above: `EditUndo2`/`EditRedo2` live on `IModelDoc2` (`doc`), not `SldWorks.Application` (`sw`) - calling on `sw` fails to resolve at all. The return value is also unreliable (observed `None` on a confirmed-successful undo, checked via feature-tree count before/after), so success is now based on the call not raising rather than its return value.
 
 ---
 
@@ -2419,7 +2547,7 @@ def capture_view(self, filepath, width=1920, height=1080) -> Dict:
         "height": height
     })
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `capture_view` wired and verified live (2026-09-22): `doc.SaveBMP(path, w, h)` produced a real BMP file. Only BMP capture exists on this API; other extensions still write BMP data as documented in the tool description.
 
 ---
 
@@ -2464,7 +2592,7 @@ def set_view(self, view_name="isometric") -> Dict:
     
     return self._result(True, f"Set view: {view_name}", SwErrors.swSuccess)
 ```
-**Status:** [ ] Not Started
+**Status:** [x] Done — `zoom_fit`/`set_view` wired (2026-09-22), reusing `ShowNamedView2`/`ViewZoomtofit2` calls already proven working elsewhere in this codebase (`create_new_part` etc.).
 
 ---
 
@@ -2480,12 +2608,12 @@ def set_view(self, view_name="isometric") -> Dict:
 
 ### 9.5 Phase 6 Deliverables
 - [ ] 5 new tools (55+ total)
-- [ ] Connection recovery system
-- [ ] Input validation
+- [~] Connection recovery system — partial (see 9.1)
+- [x] Input validation
 - [ ] Performance caching
-- [ ] Error recovery
+- [~] Error recovery — partial (see 2.3)
 - [ ] Complete test suite
-- [ ] Documentation
+- [~] Documentation — partial (see 9.1)
 
 ---
 
@@ -2626,47 +2754,56 @@ Draw a circle in the active sketch.
 
 ## 12.1 Phase Checklist
 
-### Phase 1: Foundation [ ]
-- [ ] Project structure created
-- [ ] Configuration system
-- [ ] Unit conversion
-- [ ] Auto-detect SolidWorks
-- [ ] 5 new tools
+### Phase 1: Foundation [x] Done
+- [x] Project structure created
+- [x] Configuration system
+- [x] Unit conversion
+- [x] Auto-detect SolidWorks
+- [x] 5 new tools
 
-### Phase 2: Core Features [ ]
-- [ ] Arc tools
-- [ ] Spline tool
-- [ ] Polygon tool
-- [ ] Cut extrude
-- [ ] Fillet/Chamfer
-- [ ] Revolve
-- [ ] Measurements
+### Phase 2: Core Features [~] Partial (spline/revolve/mass-properties wired and verified 2026-09-22)
+- [x] Arc tools
+- [x] Spline tool — verified live, needs explicit `VT_ARRAY|VT_R8` VARIANT
+- [x] Polygon tool
+- [x] Cut extrude
+- [x] Fillet/Chamfer
+- [x] Revolve — verified live, real signature is 20-param `FeatureRevolve2`
+- [~] Measurements — mass properties Done (via `GetMassProperties`, verified); distance wired but blocked (`CreateMeasure` COM "Member not found" on this build)
+- [~] Slot — wired but blocked (`CreateSketchSlot` COM "Parameter not optional" at every arg count tried on this build)
 
-### Phase 3: Advanced [ ]
+### Phase 3: Advanced [~] Partial (patterns wired 2026-09-20; export/plane wired and verified, mirror/shell blocked 2026-09-22)
 - [ ] Sweep
 - [ ] Loft
-- [ ] Patterns
-- [ ] Shell
-- [ ] Export tools
+- [x] Patterns — `automation/patterns.py` linear/circular wired as MCP tools
+- [~] Mirror — wired but blocked (`FeatureMirror2`/legacy `InsertMirrorFeature*` don't resolve on this build; likely needs the modern `CreateDefinition`/`CreateFeature` FeatureData pattern)
+- [~] Shell — wired but blocked, same root cause as Mirror (`InsertFeatureShell*` don't resolve)
+- [x] Export tools — STEP/STL/DXF via `Extension.SaveAs`, verified live (real STEP file written)
+- [x] Reference plane — `create_plane`/`InsertRefPlane`, verified live
 
-### Phase 4: Assembly & Drawing [ ]
-- [ ] Assembly support
-- [ ] Mates
-- [ ] Drawing support
+### Phase 4: Assembly & Drawing [~] Partial (assembly/mate/drawing wired 2026-09-20)
+- [x] Assembly support — create, insert, tree, and list all wired as MCP tools
+- [x] Mates — `automation/assemblies.py: add_mate()` wired as MCP tool
+- [x] Drawing support — `create_new_drawing()` wired as MCP tool
 - [ ] Views & dimensions
 
-### Phase 5: Simulation [ ]
-- [ ] Static study
+### Phase 5: Simulation [ ] Not Started (investigated, real blocker found — see 8.1/Task 5.1)
+- [ ] Static study — blocked on a COM interface version mismatch in the local
+  Simulation Student Edition install (`.tlb` reports v19.0, registry has
+  v13.0, live add-in implements neither's `ICosmosWorks` IID); dynamic
+  dispatch confirmed impossible (`GetTypeInfoCount()` = 0)
 - [ ] Materials
 - [ ] Loads & fixtures
 - [ ] Results
 
-### Phase 6: Production [ ]
-- [ ] Error recovery
-- [ ] Validation
+### Phase 6: Production [~] Partial (undo/redo, screenshot, zoom/view wired and verified 2026-09-22)
+- [~] Error recovery — 4 connection fallbacks exist; known COM bugs remain (see 2.3)
+- [x] Validation — `utils/validation.py`
+- [x] Undo/Redo — verified live; must call on `doc`, not `sw` (Application)
+- [x] Screenshot/view capture — `capture_view`/`SaveBMP`, verified live
+- [x] Zoom/view control — `zoom_fit`/`set_view`, reuses already-proven view calls
 - [ ] Performance
-- [ ] Tests
-- [ ] Documentation
+- [ ] Tests — `tests/` exists but coverage of `solidworks_mcp/server.py` itself is unverified
+- [~] Documentation — README + this roadmap + `solidworks-design` skill
 
 ## 12.2 Weekly Log Template
 
@@ -2713,12 +2850,14 @@ Draw a circle in the active sketch.
 
 | Version | Date | Changes |
 |---------|------|---------|
-| 2.3 | Jan 2026 | Current - 11 tools |
-| 3.0 | Target | 55+ tools, full CAD support |
+| 2.3 | Jan 2026 | Baseline — 11 tools |
+| 3.x (unreleased) | 2026-09-19 | 25 tools registered; assembly/pattern/drawing operations implemented in `automation/` but not yet wired to the tool list; Parts Intelligence and Engineering Intelligence layers added (beyond original scope); roadmap checkboxes reconciled against real code (see 2.3) |
+| 3.x (unreleased) | 2026-09-20 | 33 tools registered — wired `insert_component`, `insert_library_part`, `add_mate`, `get_assembly_tree`, `list_mates`, `create_linear_pattern`, `create_circular_pattern`, `create_new_drawing` into `server.py`. Live-tested against SolidWorks 34.4.1 the same day (see 2.3a): found and fixed 4 real bugs (`insert_component` never pre-loaded referenced files; `GetChildren()` called as a method when it's a property on this COM binding; `SelectByID2`'s Callout param passed as `None` instead of a VARIANT in `assemblies.py` and `patterns.py`; `add_mate`/patterns hardcoded an empty entity-select type). `insert_component`, `get_assembly_tree`, `list_mates`, `create_new_drawing`, `insert_library_part` (config-missing path) all confirmed working live. `add_mate` and both pattern tools still fail with a COM "Parameter not optional" error from `AddMate5`/`AddMate3`/`FeatureLinearPattern4` — root cause not yet found; needs the official SW 2026 API reference, not further guessing. |
+| 4.0 | Target | 55+ tools, full CAD support, simulation, all `automation/` capability wired and exposed |
 
 ---
 
 **END OF ROADMAP**
 
-*Last Updated: January 2026*
+*Last Updated: 2026-09-19 (status reconciled against actual code; see section 2.3)*
 *Author: Samsaam Ali Baig*

@@ -12,7 +12,7 @@ from typing import Optional, Dict
 import win32com.client
 import pythoncom
 
-from ..constants import SwErrors, SwDocumentTypes, SwFileTypes
+from ..constants import SwErrors, SwDocumentTypes, SwFileTypes, SwViews
 from ..utils import find_template
 
 logger = logging.getLogger(__name__)
@@ -398,7 +398,300 @@ class DocumentOperations:
             
             return self._result(True, f"{len(docs)} document(s) open",
                               SwErrors.swSuccess, {"documents": docs})
-            
+
         except Exception as e:
             logger.error(f"List documents error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swUnknownError)
+
+    # ========================================================================
+    # Export
+    # ========================================================================
+
+    def export_step(self, filepath: str) -> Dict:
+        """
+        Export the active document to STEP format
+
+        Args:
+            filepath: Output file path (extension added if missing)
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            if not filepath.lower().endswith(('.step', '.stp')):
+                filepath += '.step'
+            filepath = os.path.abspath(filepath)
+
+            dir_path = os.path.dirname(filepath)
+            if dir_path and not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+
+            empty_export = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
+            errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+
+            result = doc.Extension.SaveAs(
+                filepath, 0, 0, empty_export, errors, warnings
+            )
+
+            if not result or errors.value != 0:
+                return self._result(False,
+                    f"STEP export failed (error code {errors.value})",
+                    SwErrors.swExportError)
+
+            return self._result(True, f"Exported to STEP: {filepath}",
+                              SwErrors.swSuccess, {"path": filepath})
+
+        except Exception as e:
+            logger.error(f"Export STEP error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swExportError)
+
+    def export_stl(self, filepath: str, binary: bool = True) -> Dict:
+        """
+        Export the active document to STL format (for 3D printing)
+
+        Args:
+            filepath: Output file path (extension added if missing)
+            binary: True for binary STL, False for ASCII (best-effort - the
+                   document's current STL export preference may override this)
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            if not filepath.lower().endswith('.stl'):
+                filepath += '.stl'
+            filepath = os.path.abspath(filepath)
+
+            dir_path = os.path.dirname(filepath)
+            if dir_path and not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+
+            saved = False
+            method_used = ""
+
+            # Method 1: Extension.SaveAs (format inferred from extension)
+            try:
+                empty_export = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
+                errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+                warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+
+                result = doc.Extension.SaveAs(
+                    filepath, 0, 0, empty_export, errors, warnings
+                )
+                if result and errors.value == 0:
+                    saved = True
+                    method_used = "Extension.SaveAs"
+            except Exception as e:
+                logger.debug(f"STL Extension.SaveAs failed: {e}")
+
+            # Method 2: SaveAs4 (older SW, explicit binary flag)
+            if not saved:
+                try:
+                    result = doc.SaveAs4(filepath, 0, 1 if binary else 0, False)
+                    if result:
+                        saved = True
+                        method_used = "SaveAs4"
+                except Exception as e:
+                    logger.debug(f"STL SaveAs4 failed: {e}")
+
+            if not saved:
+                return self._result(False, "STL export failed - all methods attempted",
+                                  SwErrors.swExportError)
+
+            return self._result(True, f"STL exported: {filepath} [{method_used}]",
+                              SwErrors.swSuccess,
+                              {"path": filepath, "binary": binary,
+                               "api_method": method_used})
+
+        except Exception as e:
+            logger.error(f"Export STL error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swExportError)
+
+    def export_dxf(self, filepath: str) -> Dict:
+        """
+        Export the active document (drawing sheet or part flat pattern) to DXF
+
+        Args:
+            filepath: Output file path (extension added if missing)
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            if not filepath.lower().endswith('.dxf'):
+                filepath += '.dxf'
+            filepath = os.path.abspath(filepath)
+
+            dir_path = os.path.dirname(filepath)
+            if dir_path and not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+
+            empty_export = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
+            errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+
+            result = doc.Extension.SaveAs(
+                filepath, 0, 0, empty_export, errors, warnings
+            )
+
+            if not result or errors.value != 0:
+                return self._result(False,
+                    f"DXF export failed (error code {errors.value})",
+                    SwErrors.swExportError)
+
+            return self._result(True, f"Exported to DXF: {filepath}",
+                              SwErrors.swSuccess, {"path": filepath})
+
+        except Exception as e:
+            logger.error(f"Export DXF error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swExportError)
+
+    # ========================================================================
+    # Undo / Redo
+    # ========================================================================
+
+    def undo(self) -> Dict:
+        """
+        Undo the last operation in the active document
+
+        Returns:
+            Result dictionary
+
+        Note: EditUndo2 lives on IModelDoc2 (doc), not the Application object,
+        and its dynamic-dispatch return value is unreliable (observed None on
+        a confirmed-successful undo - verified live 2026-09-22 by checking
+        feature count before/after). Success here means the call didn't raise.
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            doc.EditUndo2(1)
+            return self._result(True, "Undo successful", SwErrors.swSuccess)
+
+        except Exception as e:
+            logger.error(f"Undo error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swUnknownError)
+
+    def redo(self) -> Dict:
+        """
+        Redo the last undone operation in the active document
+
+        Returns:
+            Result dictionary
+
+        Note: see undo() - EditRedo2 lives on doc, return value is unreliable.
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            doc.EditRedo2(1)
+            return self._result(True, "Redo successful", SwErrors.swSuccess)
+
+        except Exception as e:
+            logger.error(f"Redo error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swUnknownError)
+
+    # ========================================================================
+    # View Control
+    # ========================================================================
+
+    def capture_view(self, filepath: str, width: int = 1920, height: int = 1080) -> Dict:
+        """
+        Capture the current model view as an image
+
+        Args:
+            filepath: Output image path (.bmp; other extensions are saved as
+                     BMP data since SaveBMP is the only capture API available)
+            width: Image width in pixels
+            height: Image height in pixels
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            filepath = os.path.abspath(filepath)
+            dir_path = os.path.dirname(filepath)
+            if dir_path and not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+
+            result = doc.SaveBMP(filepath, width, height)
+
+            if not result:
+                return self._result(False, "Failed to capture view",
+                                  SwErrors.swFileSaveError)
+
+            return self._result(True, f"Captured: {filepath}",
+                              SwErrors.swSuccess,
+                              {"path": filepath, "width": width, "height": height})
+
+        except Exception as e:
+            logger.error(f"Capture view error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swFileSaveError)
+
+    def zoom_fit(self) -> Dict:
+        """
+        Zoom the active view to fit all geometry
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            doc.ViewZoomtofit2()
+            return self._result(True, "Zoomed to fit", SwErrors.swSuccess)
+
+        except Exception as e:
+            logger.error(f"Zoom fit error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swUnknownError)
+
+    def set_view(self, view_name: str = "isometric") -> Dict:
+        """
+        Set the active document to a standard named view
+
+        Args:
+            view_name: "front", "back", "left", "right", "top", "bottom",
+                      "isometric", "trimetric", or "dimetric"
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            view_data = SwViews.get(view_name)
+
+            doc.ShowNamedView2(view_data[0], view_data[1])
+            doc.ViewZoomtofit2()
+
+            return self._result(True, f"Set view: {view_name}",
+                              SwErrors.swSuccess, {"view": view_name})
+
+        except Exception as e:
+            logger.error(f"Set view error: {e}\n{traceback.format_exc()}")
             return self._result(False, f"Error: {e}", SwErrors.swUnknownError)

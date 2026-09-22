@@ -235,7 +235,39 @@ async def list_tools() -> list[Tool]:
                 "required": []
             }
         ),
-        
+        Tool(
+            name="draw_spline",
+            description="Draw a spline through a list of points in the active sketch.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "points": {
+                        "type": "array",
+                        "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2},
+                        "description": "List of [x, y] point pairs (min 2), e.g. [[0,0],[10,5],[20,0]]"
+                    },
+                    "unit": {"type": "string", "description": "Unit"}
+                },
+                "required": ["points"]
+            }
+        ),
+        Tool(
+            name="draw_slot",
+            description="Draw a straight slot between two center points.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "x1": {"type": "number", "default": -25, "description": "Start center X"},
+                    "y1": {"type": "number", "default": 0, "description": "Start center Y"},
+                    "x2": {"type": "number", "default": 25, "description": "End center X"},
+                    "y2": {"type": "number", "default": 0, "description": "End center Y"},
+                    "width": {"type": "number", "default": 10, "description": "Slot width"},
+                    "unit": {"type": "string", "description": "Unit"}
+                },
+                "required": []
+            }
+        ),
+
         # Feature Tools
         Tool(
             name="extrude_sketch",
@@ -294,7 +326,249 @@ async def list_tools() -> list[Tool]:
             description="List all features in the model.",
             inputSchema={"type": "object", "properties": {}, "required": []}
         ),
-        
+        Tool(
+            name="revolve_sketch",
+            description="Revolve the active sketch around its centerline (Boss or Cut revolve). Sketch needs a closed profile plus a centerline (draw_centerline).",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "angle": {"type": "number", "default": 360, "description": "Revolve angle in degrees"},
+                    "both_directions": {"type": "boolean", "default": False, "description": "Revolve symmetrically in both directions"},
+                    "cut": {"type": "boolean", "default": False, "description": "True for cut-revolve, False for boss-revolve"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="mirror_feature",
+            description="Mirror a feature about a plane.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "feature_name": {"type": "string", "description": "Feature name from the feature tree, e.g. 'Boss-Extrude1'"},
+                    "plane": {"type": "string", "default": "Right", "description": "'Front', 'Top', 'Right', or an explicit plane name"}
+                },
+                "required": ["feature_name"]
+            }
+        ),
+        Tool(
+            name="shell_body",
+            description="Shell a solid body to a constant wall thickness, optionally removing faces.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "thickness": {"type": "number", "default": 2, "description": "Wall thickness"},
+                    "faces_to_remove": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Selection names of faces to remove, e.g. ['Face<1>@Part-1']"
+                    },
+                    "unit": {"type": "string", "description": "Unit"}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="create_plane",
+            description="Create a reference plane parallel to and offset from an existing plane.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "offset": {"type": "number", "default": 0, "description": "Offset distance"},
+                    "reference": {"type": "string", "default": "Front", "description": "'Front', 'Top', 'Right', or an explicit plane name"},
+                    "unit": {"type": "string", "description": "Unit"}
+                },
+                "required": []
+            }
+        ),
+
+        # Measurement Tools
+        Tool(
+            name="measure_distance",
+            description="Measure distance between two named entities (FACE/EDGE/VERTEX/PLANE) using SolidWorks' Measure tool.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "entity1_type": {"type": "string", "enum": ["FACE", "EDGE", "VERTEX", "PLANE"], "description": "First entity type"},
+                    "entity1_name": {"type": "string", "description": "First entity selection name, e.g. 'Face<1>@Part-1'"},
+                    "entity2_type": {"type": "string", "enum": ["FACE", "EDGE", "VERTEX", "PLANE"], "description": "Second entity type"},
+                    "entity2_name": {"type": "string", "description": "Second entity selection name"},
+                    "unit": {"type": "string", "description": "Unit for the reported distance"}
+                },
+                "required": ["entity1_type", "entity1_name", "entity2_type", "entity2_name"]
+            }
+        ),
+        Tool(
+            name="get_mass_properties",
+            description="Get mass properties (mass, volume, surface area, center of mass) of the active document.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "unit": {"type": "string", "description": "Unit for volume/area/center-of-mass"}
+                },
+                "required": []
+            }
+        ),
+
+        # Export Tools
+        Tool(
+            name="export_step",
+            description="Export the active document to STEP format.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Output file path"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="export_stl",
+            description="Export the active document to STL format for 3D printing.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Output file path"},
+                    "binary": {"type": "boolean", "default": True, "description": "Binary STL (vs ASCII)"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="export_dxf",
+            description="Export the active document (drawing sheet or flat pattern) to DXF format.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Output file path"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+
+        # Assembly Tools
+        Tool(
+            name="insert_component",
+            description="Insert a part/assembly file as a component into the active assembly.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Absolute path to the part/assembly file"},
+                    "x": {"type": "number", "default": 0, "description": "Insertion X position"},
+                    "y": {"type": "number", "default": 0, "description": "Insertion Y position"},
+                    "z": {"type": "number", "default": 0, "description": "Insertion Z position"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="insert_library_part",
+            description="Insert a goBILDA library part into the active assembly by SKU.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sku": {"type": "string", "description": "goBILDA part SKU, e.g. '1120-0001-0288'"},
+                    "x": {"type": "number", "default": 0, "description": "Insertion X position"},
+                    "y": {"type": "number", "default": 0, "description": "Insertion Y position"},
+                    "z": {"type": "number", "default": 0, "description": "Insertion Z position"}
+                },
+                "required": ["sku"]
+            }
+        ),
+        Tool(
+            name="add_mate",
+            description="Add a mate constraint between two selected entities in the active assembly.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mate_type": {
+                        "type": "string",
+                        "enum": ["coincident", "concentric", "perpendicular", "parallel",
+                                 "tangent", "distance", "angle", "lock", "width"],
+                        "description": "Mate type"
+                    },
+                    "entity1": {"type": "string", "description": "Selection name of first entity, e.g. 'Face<1>@part-1'"},
+                    "entity2": {"type": "string", "description": "Selection name of second entity"},
+                    "value": {"type": "number", "default": 0, "description": "Distance/angle value (for distance/angle mates)"},
+                    "alignment": {"type": "integer", "default": 2, "description": "0=Aligned, 1=Anti-aligned, 2=Closest"}
+                },
+                "required": ["mate_type", "entity1", "entity2"]
+            }
+        ),
+        Tool(
+            name="get_assembly_tree",
+            description="Get the component tree of the active assembly.",
+            inputSchema={"type": "object", "properties": {}, "required": []}
+        ),
+        Tool(
+            name="list_mates",
+            description="List all mate constraints in the active assembly.",
+            inputSchema={"type": "object", "properties": {}, "required": []}
+        ),
+
+        # Pattern Tools
+        Tool(
+            name="create_linear_pattern",
+            description="Create a linear pattern of one or more assembly components.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "components": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Names of components to pattern, e.g. ['Part1-1']"
+                    },
+                    "direction_x": {"type": "number", "default": 1.0, "description": "Primary direction X"},
+                    "direction_y": {"type": "number", "default": 0.0, "description": "Primary direction Y"},
+                    "direction_z": {"type": "number", "default": 0.0, "description": "Primary direction Z"},
+                    "count": {"type": "integer", "default": 2, "description": "Instances in primary direction"},
+                    "spacing": {"type": "number", "default": 50.0, "description": "Spacing in primary direction"},
+                    "count2": {"type": "integer", "default": 1, "description": "Instances in secondary direction"},
+                    "spacing2": {"type": "number", "default": 50.0, "description": "Spacing in secondary direction"},
+                    "direction2_x": {"type": "number", "default": 0.0, "description": "Secondary direction X"},
+                    "direction2_y": {"type": "number", "default": 1.0, "description": "Secondary direction Y"},
+                    "direction2_z": {"type": "number", "default": 0.0, "description": "Secondary direction Z"}
+                },
+                "required": ["components"]
+            }
+        ),
+        Tool(
+            name="create_circular_pattern",
+            description="Create a circular pattern of one or more assembly components.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "components": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "Names of components to pattern, e.g. ['Part1-1']"
+                    },
+                    "axis_x": {"type": "number", "default": 0.0, "description": "Rotation axis X"},
+                    "axis_y": {"type": "number", "default": 1.0, "description": "Rotation axis Y"},
+                    "axis_z": {"type": "number", "default": 0.0, "description": "Rotation axis Z"},
+                    "count": {"type": "integer", "default": 4, "description": "Number of instances (including seed)"},
+                    "angle": {"type": "number", "description": "Total angle in degrees (ignored if equal_spacing)"},
+                    "equal_spacing": {"type": "boolean", "default": True, "description": "Distribute instances equally over 360 degrees"}
+                },
+                "required": ["components"]
+            }
+        ),
+
+        # Drawing Tools
+        Tool(
+            name="create_new_drawing",
+            description="Create a new drawing document.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_size": {
+                        "type": "string",
+                        "enum": ["A4", "A3", "A2", "A1", "Letter"],
+                        "default": "A4",
+                        "description": "Drawing paper size"
+                    }
+                },
+                "required": []
+            }
+        ),
+
         # Sketch Management Tools
         Tool(
             name="close_sketch",
@@ -308,6 +582,50 @@ async def list_tools() -> list[Tool]:
         ),
         
         # Utility Tools
+        Tool(
+            name="undo",
+            description="Undo the last operation in the active document.",
+            inputSchema={"type": "object", "properties": {}, "required": []}
+        ),
+        Tool(
+            name="redo",
+            description="Redo the last undone operation in the active document.",
+            inputSchema={"type": "object", "properties": {}, "required": []}
+        ),
+        Tool(
+            name="capture_view",
+            description="Capture the current model view as a BMP image.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "filepath": {"type": "string", "description": "Output image path"},
+                    "width": {"type": "integer", "default": 1920, "description": "Image width in pixels"},
+                    "height": {"type": "integer", "default": 1080, "description": "Image height in pixels"}
+                },
+                "required": ["filepath"]
+            }
+        ),
+        Tool(
+            name="zoom_fit",
+            description="Zoom the active view to fit all geometry.",
+            inputSchema={"type": "object", "properties": {}, "required": []}
+        ),
+        Tool(
+            name="set_view",
+            description="Set the active document to a standard named view.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "view_name": {
+                        "type": "string",
+                        "enum": ["front", "back", "left", "right", "top", "bottom", "isometric", "trimetric", "dimetric"],
+                        "default": "isometric",
+                        "description": "Standard view name"
+                    }
+                },
+                "required": []
+            }
+        ),
         Tool(
             name="set_units",
             description="Set default unit for dimensions.",
@@ -457,7 +775,21 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments.get("sides", 6),
                 arguments.get("unit")
             )
-        
+
+        elif name == "draw_spline":
+            points = [tuple(p) for p in arguments.get("points", [])]
+            result = sw_automation.draw_spline(points, arguments.get("unit"))
+
+        elif name == "draw_slot":
+            result = sw_automation.draw_slot(
+                arguments.get("x1", -25),
+                arguments.get("y1", 0),
+                arguments.get("x2", 25),
+                arguments.get("y2", 0),
+                arguments.get("width", 10),
+                arguments.get("unit")
+            )
+
         # Feature Tools
         elif name == "extrude_sketch":
             result = sw_automation.extrude_sketch(
@@ -489,7 +821,127 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         
         elif name == "list_features":
             result = _list_features_fixed()
-        
+
+        elif name == "revolve_sketch":
+            result = sw_automation.revolve_sketch(
+                arguments.get("angle", 360),
+                arguments.get("both_directions", False),
+                arguments.get("cut", False)
+            )
+
+        elif name == "mirror_feature":
+            result = sw_automation.mirror_feature(
+                arguments.get("feature_name", ""),
+                arguments.get("plane", "Right")
+            )
+
+        elif name == "shell_body":
+            result = sw_automation.shell_body(
+                arguments.get("thickness", 2),
+                arguments.get("faces_to_remove"),
+                arguments.get("unit")
+            )
+
+        elif name == "create_plane":
+            result = sw_automation.create_plane(
+                arguments.get("offset", 0),
+                arguments.get("reference", "Front"),
+                arguments.get("unit")
+            )
+
+        elif name == "measure_distance":
+            result = sw_automation.measure_distance(
+                arguments.get("entity1_type", ""),
+                arguments.get("entity1_name", ""),
+                arguments.get("entity2_type", ""),
+                arguments.get("entity2_name", ""),
+                arguments.get("unit")
+            )
+
+        elif name == "get_mass_properties":
+            result = sw_automation.get_mass_properties(arguments.get("unit"))
+
+        elif name == "export_step":
+            result = sw_automation.export_step(arguments.get("filepath", ""))
+
+        elif name == "export_stl":
+            result = sw_automation.export_stl(
+                arguments.get("filepath", ""),
+                arguments.get("binary", True)
+            )
+
+        elif name == "export_dxf":
+            result = sw_automation.export_dxf(arguments.get("filepath", ""))
+
+        # Assembly Tools
+        elif name == "insert_component":
+            result = sw_automation.insert_component(
+                arguments.get("filepath", ""),
+                position=(
+                    arguments.get("x", 0),
+                    arguments.get("y", 0),
+                    arguments.get("z", 0),
+                )
+            )
+
+        elif name == "insert_library_part":
+            result = sw_automation.insert_library_part(
+                arguments.get("sku", ""),
+                position=(
+                    arguments.get("x", 0),
+                    arguments.get("y", 0),
+                    arguments.get("z", 0),
+                )
+            )
+
+        elif name == "add_mate":
+            result = sw_automation.add_mate(
+                arguments.get("mate_type", "coincident"),
+                arguments.get("entity1", ""),
+                arguments.get("entity2", ""),
+                arguments.get("value", 0.0),
+                arguments.get("alignment", 2)
+            )
+
+        elif name == "get_assembly_tree":
+            result = sw_automation.get_assembly_tree()
+
+        elif name == "list_mates":
+            result = sw_automation.list_mates()
+
+        # Pattern Tools
+        elif name == "create_linear_pattern":
+            result = sw_automation.create_linear_pattern(
+                arguments.get("components", []),
+                arguments.get("direction_x", 1.0),
+                arguments.get("direction_y", 0.0),
+                arguments.get("direction_z", 0.0),
+                arguments.get("count", 2),
+                arguments.get("spacing", 50.0),
+                arguments.get("count2", 1),
+                arguments.get("spacing2", 50.0),
+                arguments.get("direction2_x", 0.0),
+                arguments.get("direction2_y", 1.0),
+                arguments.get("direction2_z", 0.0),
+            )
+
+        elif name == "create_circular_pattern":
+            result = sw_automation.create_circular_pattern(
+                arguments.get("components", []),
+                arguments.get("axis_x", 0.0),
+                arguments.get("axis_y", 1.0),
+                arguments.get("axis_z", 0.0),
+                arguments.get("count", 4),
+                arguments.get("angle"),
+                arguments.get("equal_spacing", True),
+            )
+
+        # Drawing Tools
+        elif name == "create_new_drawing":
+            result = sw_automation.create_new_drawing(
+                arguments.get("paper_size", "A4")
+            )
+
         # Sketch Management Tools
         elif name == "close_sketch":
             result = _close_sketch_handler()
@@ -498,6 +950,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = _get_sketch_status_handler()
         
         # Utility Tools
+        elif name == "undo":
+            result = sw_automation.undo()
+
+        elif name == "redo":
+            result = sw_automation.redo()
+
+        elif name == "capture_view":
+            result = sw_automation.capture_view(
+                arguments.get("filepath", ""),
+                arguments.get("width", 1920),
+                arguments.get("height", 1080)
+            )
+
+        elif name == "zoom_fit":
+            result = sw_automation.zoom_fit()
+
+        elif name == "set_view":
+            result = sw_automation.set_view(arguments.get("view_name", "isometric"))
+
         elif name == "set_units":
             unit = arguments.get("unit", "mm")
             set_default_unit(unit)
