@@ -11,8 +11,13 @@ Requires parent class (SolidWorksAutomation base) to provide:
 """
 
 import logging
+import math
+import os
 import traceback
 from typing import Optional
+
+import pythoncom
+import win32com.client
 
 from ..constants import (
     SwDocumentTypes,
@@ -100,6 +105,37 @@ class AssemblyOperations:
             doc, err = self.get_active_doc()
             if err:
                 return err
+
+            if not os.path.exists(filepath):
+                return self._result(
+                    False,
+                    f"File not found: {filepath}",
+                    SwErrors.swFileNotFoundError,
+                )
+
+            # AddComponent5 silently returns None if the referenced document
+            # isn't already loaded into the SolidWorks session — pre-load it
+            # (silently) and reactivate the assembly before inserting.
+            asm_title = _get_doc_title(doc)
+            ext = os.path.splitext(filepath)[1].lower()
+            type_map = {
+                ".sldprt": SwDocumentTypes.swDocPART,
+                ".sldasm": SwDocumentTypes.swDocASSEMBLY,
+            }
+            doc_type = type_map.get(ext, SwDocumentTypes.swDocPART)
+
+            errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            warnings = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            self._sw_app.OpenDoc6(filepath, int(doc_type), 1, "", errors, warnings)
+
+            activate_errors = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
+            doc = self._sw_app.ActivateDoc3(asm_title, False, 0, activate_errors)
+            if doc is None:
+                return self._result(
+                    False,
+                    f"Could not reactivate assembly '{asm_title}' after loading component",
+                    SwErrors.swFeatureError,
+                )
 
             # Convert position to meters (SW internal unit)
             x = self._units.to_meters(position[0])
@@ -225,17 +261,21 @@ class AssemblyOperations:
                     SwErrors.swInvalidInput,
                 )
 
-            # Convert value to meters for distance mates
-            sw_value = value
+            # Distance mates take meters, angle mates take radians
+            distance = 0.0
+            angle = 0.0
             if mate_int == SwMateTypes.swMateDISTANCE:
-                sw_value = self._units.to_meters(value)
+                distance = self._units.to_meters(value)
+            elif mate_int == SwMateTypes.swMateANGLE:
+                angle = math.radians(value)
 
-            # Select entities
+            # Select entities. The Callout parameter (8th arg) must be an explicit
+            # VT_DISPATCH VARIANT — plain Python None raises a COM "Type mismatch"
+            # on this dynamic-dispatch binding (see sketches.py for the same pattern).
             doc.ClearSelection2(True)
+            empty_callout = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
 
-            selected1 = doc.Extension.SelectByID2(
-                entity1, "", 0, 0, 0, False, 1, None, 0
-            )
+            selected1 = _select_entity(doc, entity1, False, empty_callout)
             if not selected1:
                 return self._result(
                     False,
@@ -243,9 +283,7 @@ class AssemblyOperations:
                     SwErrors.swSelectionError,
                 )
 
-            selected2 = doc.Extension.SelectByID2(
-                entity2, "", 0, 0, 0, True, 1, None, 0
-            )
+            selected2 = _select_entity(doc, entity2, True, empty_callout)
             if not selected2:
                 return self._result(
                     False,
@@ -253,22 +291,26 @@ class AssemblyOperations:
                     SwErrors.swSelectionError,
                 )
 
-            # Add the mate
-            error_code = 0
+            # Add the mate. AddMate5 takes 15 args (all required over COM).
+            # ErrorStatus is an out-param and must be passed as a byref
+            # VARIANT, not a plain int, or COM raises "Type mismatch".
+            error_status = win32com.client.VARIANT(pythoncom.VT_BYREF | pythoncom.VT_I4, 0)
             mate_feature = doc.AddMate5(
-                mate_int,           # Type
-                alignment,          # Alignment
+                mate_int,           # MateTypeFromEnum
+                alignment,          # AlignFromEnum
                 False,              # Flip
-                sw_value,           # Distance/angle value
-                sw_value,           # Min value (unused for basic mates)
-                sw_value,           # Max value (unused for basic mates)
-                0,                  # Distance2
-                0,                  # Distance2 min
-                0,                  # Distance2 max
-                0,                  # Angle for distance mates
+                distance,           # Distance (m)
+                distance,           # DistanceAbsUpperLimit
+                distance,           # DistanceAbsLowerLimit
+                1,                  # GearRatioNumerator
+                1,                  # GearRatioDenominator
+                angle,              # Angle (rad)
+                angle,              # AngleAbsUpperLimit
+                angle,              # AngleAbsLowerLimit
                 False,              # ForPositioningOnly
                 False,              # LockRotation
-                error_code,         # Error status (out param via COM)
+                0,                  # WidthMateOption (swMateWidthOptions_Centered)
+                error_status,       # ErrorStatus (out)
             )
 
             if mate_feature is None:
@@ -325,7 +367,7 @@ class AssemblyOperations:
                     SwErrors.swFeatureError,
                 )
 
-            children = root_comp.GetChildren()
+            children = _get_children(root_comp)
             if children:
                 for child in children:
                     comp_info = _extract_component_info(child)
@@ -352,9 +394,16 @@ class AssemblyOperations:
             if err:
                 return err
 
+            # The mate folder's display name is "Mates" (and localized), so find
+            # it by type. doc.FirstFeature is "Member not found" on assemblies
+            # with this binding; FeatureManager.GetFeatures works.
             mates = []
+            mate_group = None
             try:
-                mate_group = doc.FeatureByName("MateGroup")
+                for feat in doc.FeatureManager.GetFeatures(True) or []:
+                    if _com_get(feat, "GetTypeName2") == "MateGroup":
+                        mate_group = feat
+                        break
             except Exception:
                 mate_group = None
 
@@ -365,12 +414,12 @@ class AssemblyOperations:
                     data={"mates": [], "count": 0},
                 )
 
-            sub_features = mate_group.GetChildren()
-            if sub_features:
-                for feat in sub_features:
-                    mate_info = _extract_mate_info(feat)
-                    if mate_info:
-                        mates.append(mate_info)
+            feat = _com_get(mate_group, "GetFirstSubFeature")
+            while feat is not None:
+                mate_info = _extract_mate_info(feat)
+                if mate_info:
+                    mates.append(mate_info)
+                feat = _com_get(feat, "GetNextSubFeature")
 
             return self._result(
                 True,
@@ -413,6 +462,77 @@ def _resolve_mate_type(mate_type: str | int) -> int | None:
     return None
 
 
+_SELECT_TYPE_FALLBACKS = ("", "FACE", "PLANE", "EDGE", "VERTEX")
+
+
+def _select_entity(doc, name: str, append: bool, empty_callout) -> bool:
+    """Select an entity by name, trying an empty type first, then common
+    explicit types. SelectByID2 with an empty type only resolves entities
+    whose type is embedded in the name (e.g. 'Edge<3>') — named features
+    like planes require an explicit type on this SW COM binding.
+
+    A failed attempt can still leave a stray entity selected (e.g. an empty
+    type at 0,0,0 picks a face at the origin), which would poison the mate's
+    selection set — so anything a failed attempt added is deselected.
+    """
+    sel_mgr = doc.SelectionManager
+    for select_type in _SELECT_TYPE_FALLBACKS:
+        before = sel_mgr.GetSelectedObjectCount2(-1)
+        try:
+            if doc.Extension.SelectByID2(
+                name, select_type, 0, 0, 0, append, 1, empty_callout, 0
+            ):
+                return True
+        except Exception:
+            pass
+        after = sel_mgr.GetSelectedObjectCount2(-1)
+        for index in range(after, before, -1):
+            sel_mgr.DeSelect2(index, -1)
+    return False
+
+
+def _com_get(obj, name: str):
+    """Read a parameterless COM method/property.
+
+    On the dynamic binding, parameterless methods often resolve to their value
+    on attribute access. A returned COM object is itself callable (default
+    member), so ``if callable(x): x()`` would wrongly invoke it — only call
+    plain Python callables (unresolved bound methods).
+    """
+    value = getattr(obj, name)
+    if callable(value) and not hasattr(value, "_oleobj_"):  # not a COM object
+        value = value()
+    return value
+
+
+def _get_children(obj) -> list:
+    """Safely call GetChildren (property on some COM bindings, method on others)."""
+    try:
+        children = obj.GetChildren
+        if callable(children):
+            children = children()
+        return list(children) if children else []
+    except Exception:
+        try:
+            return list(obj.GetChildren())
+        except Exception:
+            return []
+
+
+def _get_doc_title(doc) -> str:
+    """Safely extract a document's title (GetTitle is a property on some COM bindings)."""
+    try:
+        title = doc.GetTitle
+        if callable(title):
+            return title()
+        return str(title)
+    except Exception:
+        try:
+            return str(doc.GetTitle())
+        except Exception:
+            return ""
+
+
 def _get_component_name(component) -> str:
     """Safely extract the name from a COM component object."""
     try:
@@ -434,7 +554,9 @@ def _extract_component_info(component) -> dict:
     """Extract basic info from a COM IComponent2 object."""
     name = _get_component_name(component)
     try:
-        suppressed = component.IsSuppressed()
+        suppressed = component.IsSuppressed
+        if callable(suppressed):
+            suppressed = suppressed()
     except Exception:
         suppressed = False
 
@@ -446,7 +568,9 @@ def _extract_component_info(component) -> dict:
         visible = True
 
     try:
-        path = component.GetPathName()
+        path = component.GetPathName
+        if callable(path):
+            path = path()
     except Exception:
         path = ""
 

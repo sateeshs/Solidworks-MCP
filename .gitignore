@@ -15,6 +15,7 @@ build/
 *.stp
 *.STEP
 *.STP
+.mcp.json
 
 # SolidWorks files
 *.sldprt

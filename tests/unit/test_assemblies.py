@@ -14,6 +14,8 @@ from solidworks_mcp.automation.assemblies import (
     _get_component_name,
     _extract_component_info,
     _extract_mate_info,
+    _com_get,
+    _select_entity,
 )
 from solidworks_mcp.constants import SwErrors, SwMateTypes
 
@@ -144,3 +146,46 @@ class TestExtractMateInfo:
         type(feat).Name = PropertyMock(side_effect=Exception("COM error"))
 
         assert _extract_mate_info(feat) is None
+
+
+class TestComGet:
+    """_com_get must not invoke a COM object that was returned by value."""
+
+    def test_calls_unresolved_method(self):
+        obj = MagicMock(spec=["GetTitle"])
+        obj.GetTitle = lambda: "Assem1"
+        assert _com_get(obj, "GetTitle") == "Assem1"
+
+    def test_returns_resolved_value(self):
+        obj = MagicMock(spec=["GetTypeName2"])
+        obj.GetTypeName2 = "MateGroup"
+        assert _com_get(obj, "GetTypeName2") == "MateGroup"
+
+    def test_does_not_call_returned_com_object(self):
+        com_obj = MagicMock()  # has _oleobj_ like a CDispatch, and is callable
+        obj = MagicMock(spec=["GetFirstSubFeature"])
+        obj.GetFirstSubFeature = com_obj
+        assert _com_get(obj, "GetFirstSubFeature") is com_obj
+        com_obj.assert_not_called()
+
+
+class TestSelectEntity:
+    """_select_entity fallback must not leave stray selections behind."""
+
+    def _doc(self, results, strays):
+        doc = MagicMock()
+        counts = iter(strays)
+        doc.Extension.SelectByID2.side_effect = results
+        doc.SelectionManager.GetSelectedObjectCount2.side_effect = lambda _mark: next(counts)
+        return doc
+
+    def test_deselects_what_failed_attempt_added(self):
+        # "" fails but selects a stray face (0 -> 1), "FACE" fails cleanly, "PLANE" works
+        doc = self._doc([False, False, True], [0, 1, 0, 0, 0])
+        assert _select_entity(doc, "Front Plane@p-1@Assem1", False, None) is True
+        doc.SelectionManager.DeSelect2.assert_called_once_with(1, -1)
+
+    def test_returns_false_when_all_types_fail(self):
+        doc = self._doc([False] * 5, [0] * 10)
+        assert _select_entity(doc, "missing", True, None) is False
+        doc.SelectionManager.DeSelect2.assert_not_called()
