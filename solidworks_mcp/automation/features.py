@@ -686,6 +686,191 @@ class FeatureOperations:
             return self._result(False, f"Error: {e}", SwErrors.swFeatureError)
 
     # ========================================================================
+    # Sweep / Loft
+    # ========================================================================
+
+    def _select_sketches(self, doc, sketches: List[tuple]) -> Optional[str]:
+        """
+        Close any open sketch, then select sketches by name with selection
+        marks (sweep: profile=1, path=4; loft: every profile=1).
+
+        Args:
+            sketches: List of (sketch_name, mark) tuples, in selection order
+
+        Returns:
+            None on success, or the name of the sketch that couldn't be selected
+        """
+        try:
+            if doc.SketchManager.ActiveSketch is not None:
+                doc.SketchManager.InsertSketch(True)
+        except Exception:
+            pass
+
+        doc.ClearSelection2(True)
+        empty_callout = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)
+        for i, (name, mark) in enumerate(sketches):
+            if not doc.Extension.SelectByID2(
+                name, "SKETCH", 0, 0, 0, i > 0, mark, empty_callout, 0
+            ):
+                doc.ClearSelection2(True)
+                return name
+        return None
+
+    def sweep_sketch(self, profile_sketch: str, path_sketch: str,
+                     cut: bool = False, merge: bool = True) -> Dict:
+        """
+        Sweep a closed profile sketch along a path sketch (Boss or Cut sweep).
+
+        Args:
+            profile_sketch: Name of the closed profile sketch (e.g. "Sketch1")
+            path_sketch: Name of the path sketch (open or closed; must start
+                         on the profile's plane)
+            cut: True for a cut-sweep, False for a boss-sweep
+            merge: Merge a boss-sweep into existing bodies
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            missing = self._select_sketches(
+                doc, [(profile_sketch, 1), (path_sketch, 4)]
+            )
+            if missing:
+                return self._result(False,
+                    f"Could not select sketch '{missing}'",
+                    SwErrors.swSelectionError,
+                    {"diagnostics": self._get_sketch_info(doc)})
+
+            # VERIFIED live (2026-09-24, SW 34.4.1). InsertProtrusionSwept4
+            # (20p): Propagate, Alignment, TwistCtrlOption, KeepTangency,
+            # BAdvancedSmoothing, StartMatchingType, EndMatchingType,
+            # IsThinBody, Thickness1, Thickness2, ThinType, PathAlign, Merge,
+            # UseFeatScope, UseAutoSelect, TwistAngle, BMergeSmoothFaces,
+            # CircularProfile, CircularProfileDiameter, Direction.
+            # InsertCutSwept5 (22p) drops Merge and adds AssemblyFeatureScope,
+            # AutoSelectComponents, PropagateFeatureToParts after
+            # BMergeSmoothFaces.
+            feat_mgr = doc.FeatureManager
+            if cut:
+                feat = feat_mgr.InsertCutSwept5(
+                    False, True, 0, False, False, 0, 0,
+                    False, 0.0, 0.0, 0, 0,
+                    True, True, 0.0, True,
+                    False, False, False,
+                    False, 0.0, 0
+                )
+            else:
+                feat = feat_mgr.InsertProtrusionSwept4(
+                    False, True, 0, False, False, 0, 0,
+                    False, 0.0, 0.0, 0, 0,
+                    merge, True, True, 0.0, True,
+                    False, 0.0, 0
+                )
+            doc.ClearSelection2(True)
+
+            sweep_type = "cut-sweep" if cut else "boss-sweep"
+            if feat is None:
+                return self._result(False,
+                    f"{sweep_type} failed. The profile must be a closed sketch, "
+                    f"and the path must start on the profile's plane without "
+                    f"self-intersecting.",
+                    SwErrors.swFeatureError,
+                    {"profile_sketch": profile_sketch, "path_sketch": path_sketch})
+
+            feat_name = feat.Name
+            return self._result(True,
+                f"{sweep_type} '{feat_name}': {profile_sketch} along {path_sketch}",
+                SwErrors.swSuccess,
+                {"feature": feat_name, "profile_sketch": profile_sketch,
+                 "path_sketch": path_sketch, "cut": cut})
+
+        except Exception as e:
+            logger.error(f"Sweep error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swFeatureError)
+
+    def loft_sketches(self, sketch_names: List[str], cut: bool = False,
+                      closed: bool = False, merge: bool = True) -> Dict:
+        """
+        Loft through two or more closed profile sketches (Boss or Cut loft).
+
+        Args:
+            sketch_names: Profile sketch names in loft order (profiles
+                          usually sit on parallel planes - see create_plane)
+            cut: True for a cut-loft, False for a boss-loft
+            closed: Close the loft back from the last profile to the first
+            merge: Merge a boss-loft into existing bodies
+
+        Returns:
+            Result dictionary
+        """
+        try:
+            doc, err = self.get_active_doc()
+            if err:
+                return err
+
+            if not sketch_names or len(sketch_names) < 2:
+                return self._result(False,
+                    "Loft needs at least 2 profile sketches",
+                    SwErrors.swInvalidInput)
+
+            missing = self._select_sketches(
+                doc, [(name, 1) for name in sketch_names]
+            )
+            if missing:
+                return self._result(False,
+                    f"Could not select sketch '{missing}'",
+                    SwErrors.swSelectionError,
+                    {"diagnostics": self._get_sketch_info(doc)})
+
+            # VERIFIED live (2026-09-24, SW 34.4.1). InsertProtrusionBlend2
+            # (18p): Closed, KeepTangency, ForceNonRational,
+            # TessToleranceFactor, StartMatchingType, EndMatchingType,
+            # StartTangentLength, EndTangentLength, StartTangentDir,
+            # EndTangentDir, IsThinBody, Thickness1, Thickness2, ThinType,
+            # Merge, UseFeatScope, UseAutoSelect, GuideCurveInfluence.
+            # InsertCutBlend (12p): Closed, KeepTangency, ForceNonRational,
+            # TessToleranceFactor, StartMatchingType, EndMatchingType,
+            # IsThinBody, Thickness1, Thickness2, ThinType, UseFeatScope,
+            # UseAutoSelect.
+            feat_mgr = doc.FeatureManager
+            if cut:
+                feat = feat_mgr.InsertCutBlend(
+                    closed, True, False, 1.0, 0, 0,
+                    False, 0.0, 0.0, 0, True, True
+                )
+            else:
+                feat = feat_mgr.InsertProtrusionBlend2(
+                    closed, True, False, 1.0, 0, 0,
+                    1.0, 1.0, True, True,
+                    False, 0.0, 0.0, 0,
+                    merge, True, True, 0
+                )
+            doc.ClearSelection2(True)
+
+            loft_type = "cut-loft" if cut else "boss-loft"
+            if feat is None:
+                return self._result(False,
+                    f"{loft_type} failed. Each profile must be a closed sketch, "
+                    f"typically on separate parallel planes.",
+                    SwErrors.swFeatureError,
+                    {"sketch_names": sketch_names})
+
+            feat_name = feat.Name
+            return self._result(True,
+                f"{loft_type} '{feat_name}' through {len(sketch_names)} profiles",
+                SwErrors.swSuccess,
+                {"feature": feat_name, "sketch_names": sketch_names,
+                 "cut": cut, "closed": closed})
+
+        except Exception as e:
+            logger.error(f"Loft error: {e}\n{traceback.format_exc()}")
+            return self._result(False, f"Error: {e}", SwErrors.swFeatureError)
+
+    # ========================================================================
     # Measurement
     # ========================================================================
 
@@ -1008,10 +1193,12 @@ class FeatureOperations:
                     f"Could not select reference plane: {ref_name}",
                     SwErrors.swSelectionError)
 
-            # Type: swRefPlaneReferenceConstraint_Parallel (1) |
-            #       swRefPlaneReferenceConstraint_Distance (4)
+            # swRefPlaneReferenceConstraint_Distance (8), plus _OptionFlip
+            # (256) for negative offsets. (Parallel|Coincident = 1|4 silently
+            # ignores the offset and puts the plane on the reference.)
+            constraint = 8 | (256 if offset_m < 0 else 0)
             feat = doc.FeatureManager.InsertRefPlane(
-                1 | 4, offset_m, 0, 0, 0, 0
+                constraint, abs(offset_m), 0, 0, 0, 0
             )
 
             if feat is None:

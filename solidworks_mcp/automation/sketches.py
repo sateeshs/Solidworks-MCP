@@ -32,8 +32,9 @@ class SketchOperations:
         Create a new sketch on specified plane
         
         Args:
-            plane: Plane name - "Front", "Top", or "Right"
-        
+            plane: "Front", "Top", "Right", or an explicit plane name from
+                   the feature tree (e.g. "Plane1" from create_plane)
+
         Returns:
             Result dictionary
         """
@@ -41,9 +42,12 @@ class SketchOperations:
             doc, err = self.get_active_doc()
             if err:
                 return err
-            
-            # Get plane name
-            plane_name = SwPlanes.get(plane)
+
+            # Short names map to the default planes; anything else is used as-is
+            if plane.lower() in ("front", "top", "right"):
+                plane_name = SwPlanes.get(plane)
+            else:
+                plane_name = plane
             
             # Create empty variant for callout parameter
             empty_callout = win32com.client.VARIANT(pythoncom.VT_DISPATCH, None)

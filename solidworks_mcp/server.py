@@ -138,9 +138,8 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "plane": {
                         "type": "string",
-                        "enum": ["Front", "Top", "Right"],
                         "default": "Front",
-                        "description": "Plane to sketch on"
+                        "description": "'Front', 'Top', 'Right', or an explicit plane name (e.g. 'Plane1' from create_plane)"
                     }
                 },
                 "required": []
@@ -340,6 +339,34 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="sweep_sketch",
+            description="Sweep a closed profile sketch along a path sketch (Boss or Cut sweep). The path must start on the profile's plane. Use list_features for sketch names.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "profile_sketch": {"type": "string", "description": "Closed profile sketch name, e.g. 'Sketch1'"},
+                    "path_sketch": {"type": "string", "description": "Path sketch name, e.g. 'Sketch2'"},
+                    "cut": {"type": "boolean", "default": False, "description": "True for cut-sweep, False for boss-sweep"},
+                    "merge": {"type": "boolean", "default": True, "description": "Merge a boss-sweep into existing bodies"}
+                },
+                "required": ["profile_sketch", "path_sketch"]
+            }
+        ),
+        Tool(
+            name="loft_sketches",
+            description="Loft through 2+ closed profile sketches in order (Boss or Cut loft). Profiles usually sit on parallel planes: create_plane, then create_sketch on that plane.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "sketch_names": {"type": "array", "items": {"type": "string"}, "description": "Profile sketch names in loft order, e.g. ['Sketch1', 'Sketch2']"},
+                    "cut": {"type": "boolean", "default": False, "description": "True for cut-loft, False for boss-loft"},
+                    "closed": {"type": "boolean", "default": False, "description": "Close the loft from the last profile back to the first"},
+                    "merge": {"type": "boolean", "default": True, "description": "Merge a boss-loft into existing bodies"}
+                },
+                "required": ["sketch_names"]
+            }
+        ),
+        Tool(
             name="mirror_feature",
             description="Mirror a feature about a plane.",
             inputSchema={
@@ -406,6 +433,21 @@ async def list_tools() -> list[Tool]:
                     "unit": {"type": "string", "description": "Unit for volume/area/center-of-mass"}
                 },
                 "required": []
+            }
+        ),
+        Tool(
+            name="apply_material",
+            description="Apply a material to the active part from the installed SolidWorks material databases "
+                        "(e.g. '6061 Alloy', 'ABS', 'POM Acetal Copolymer', 'Plain Carbon Steel'). "
+                        "Name matching is case-insensitive; an unknown name returns suggestions. "
+                        "Returns density, modulus, yield strength and the updated part mass.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "material": {"type": "string", "description": "Material name"},
+                    "database": {"type": "string", "description": "Optional database to search, e.g. 'SOLIDWORKS Materials' or 'Custom Materials'"}
+                },
+                "required": ["material"]
             }
         ),
 
@@ -829,6 +871,22 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 arguments.get("cut", False)
             )
 
+        elif name == "sweep_sketch":
+            result = sw_automation.sweep_sketch(
+                arguments.get("profile_sketch", ""),
+                arguments.get("path_sketch", ""),
+                arguments.get("cut", False),
+                arguments.get("merge", True)
+            )
+
+        elif name == "loft_sketches":
+            result = sw_automation.loft_sketches(
+                arguments.get("sketch_names", []),
+                arguments.get("cut", False),
+                arguments.get("closed", False),
+                arguments.get("merge", True)
+            )
+
         elif name == "mirror_feature":
             result = sw_automation.mirror_feature(
                 arguments.get("feature_name", ""),
@@ -860,6 +918,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
         elif name == "get_mass_properties":
             result = sw_automation.get_mass_properties(arguments.get("unit"))
+
+        elif name == "apply_material":
+            result = sw_automation.apply_material(
+                arguments.get("material", ""),
+                arguments.get("database")
+            )
 
         elif name == "export_step":
             result = sw_automation.export_step(arguments.get("filepath", ""))

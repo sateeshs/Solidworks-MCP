@@ -10,11 +10,13 @@ from .sketches import SketchOperations
 from .features import FeatureOperations
 from .assemblies import AssemblyOperations
 from .patterns import PatternOperations
+from .materials import MaterialOperations
 
 
 class SolidWorksAutomation(_BaseAutomation, DocumentOperations,
                            SketchOperations, FeatureOperations,
-                           AssemblyOperations, PatternOperations):
+                           AssemblyOperations, PatternOperations,
+                           MaterialOperations):
     """
     Complete SolidWorks automation class
 
@@ -25,6 +27,7 @@ class SolidWorksAutomation(_BaseAutomation, DocumentOperations,
     - Features: Extrude, cut, fillet, chamfer
     - Assemblies: Insert components, add mates, inspect tree
     - Patterns: Linear and circular component patterns
+    - Materials: Assign materials from the SolidWorks material databases
     """
     pass
 
@@ -36,4 +39,5 @@ __all__ = [
     "FeatureOperations",
     "AssemblyOperations",
     "PatternOperations",
+    "MaterialOperations",
 ]
