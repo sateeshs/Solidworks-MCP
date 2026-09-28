@@ -239,3 +239,8 @@ class Defaults:
     CONNECTION_TIMEOUT = 120  # seconds
     RETRY_INTERVAL = 5  # seconds
     MAX_RETRIES = 3
+
+    # Upper bound on any COM linked-list traversal (feature trees, open
+    # documents, mate chains). A cyclic or malformed chain would otherwise loop
+    # forever, leaking memory on every iteration. Real models are far smaller.
+    MAX_TREE_WALK = 10000  # nodes

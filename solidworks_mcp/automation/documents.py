@@ -14,6 +14,7 @@ import pythoncom
 
 from ..constants import SwErrors, SwDocumentTypes, SwFileTypes, SwViews
 from ..utils import find_template
+from ..utils.tree_walk import walk_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +376,11 @@ class DocumentOperations:
             if callable(doc):
                 doc = doc()
 
+            walked = 0
             while doc:
+                if walk_exhausted(walked, "open document list"):
+                    break
+                walked += 1
                 try:
                     title = doc.GetTitle
                     if callable(title):

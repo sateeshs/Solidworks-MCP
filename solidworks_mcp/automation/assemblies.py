@@ -26,6 +26,7 @@ from ..constants import (
     SwMateTypes,
     SwSelectType,
 )
+from ..utils.tree_walk import walk_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -415,7 +416,11 @@ class AssemblyOperations:
                 )
 
             feat = _com_get(mate_group, "GetFirstSubFeature")
+            walked = 0
             while feat is not None:
+                if walk_exhausted(walked, "mate chain"):
+                    break
+                walked += 1
                 mate_info = _extract_mate_info(feat)
                 if mate_info:
                     mates.append(mate_info)

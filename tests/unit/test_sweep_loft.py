@@ -34,6 +34,10 @@ class FakeAutomation(FeatureOperations):
 def _doc(select_ok=True):
     doc = MagicMock()
     doc.SketchManager.ActiveSketch = None
+    # An empty feature tree. Without this, FirstFeature auto-creates a mock
+    # whose GetNextFeature yields a fresh truthy child forever, so the
+    # diagnostic tree walk on the failure path never terminates.
+    doc.FirstFeature = None
     doc.Extension.SelectByID2.return_value = select_ok
     feat = MagicMock()
     feat.Name = "Feature1"

@@ -24,6 +24,7 @@ import win32com.client
 import pythoncom
 
 from ..constants import SwErrors, SwEndConditions, SwPlanes
+from ..utils.tree_walk import walk_exhausted
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,11 @@ class FeatureOperations:
         last_sketch = None
         try:
             feat = doc.FirstFeature
+            walked = 0
             while feat is not None:
+                if walk_exhausted(walked, "feature tree"):
+                    break
+                walked += 1
                 try:
                     feat_type = feat.GetTypeName2
                     if feat_type == "ProfileFeature":
@@ -92,7 +97,11 @@ class FeatureOperations:
             
             # Count sketches and features
             feat = doc.FirstFeature
+            walked = 0
             while feat is not None:
+                if walk_exhausted(walked, "feature tree"):
+                    break
+                walked += 1
                 try:
                     feat_type = feat.GetTypeName2
                     info["feature_count"] += 1
@@ -544,8 +553,12 @@ class FeatureOperations:
             
             # FIXED: Use property access, not method calls
             feat = doc.FirstFeature
-            
+            walked = 0
+
             while feat is not None:
+                if walk_exhausted(walked, "feature tree"):
+                    break
+                walked += 1
                 try:
                     name = feat.Name
                     # FIXED: GetTypeName2 is a property in SW 2025

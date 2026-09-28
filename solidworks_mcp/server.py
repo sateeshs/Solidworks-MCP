@@ -34,6 +34,7 @@ from .automation import SolidWorksAutomation
 from .constants import SwErrors
 from .config import get_config, save_config
 from .utils import get_solidworks_info, set_default_unit
+from .utils.tree_walk import walk_exhausted
 
 # Configure logging
 config = get_config()
@@ -1199,7 +1200,11 @@ def _list_features_fixed() -> Dict:
         except AttributeError:
             feat = doc.FirstFeature()
         
+        walked = 0
         while feat is not None:
+            if walk_exhausted(walked, "feature tree"):
+                break
+            walked += 1
             try:
                 name = ""
                 feat_type = ""
@@ -1361,11 +1366,15 @@ def _get_sketch_status_handler() -> Dict:
         # Walk feature tree (using PROPERTIES not methods)
         try:
             feat = doc.FirstFeature
+            walked = 0
             while feat is not None:
+                if walk_exhausted(walked, "feature tree"):
+                    break
+                walked += 1
                 try:
                     feat_type = feat.GetTypeName2
                     info["feature_count"] += 1
-                    
+
                     if feat_type == "ProfileFeature":
                         info["sketch_count"] += 1
                         info["sketch_names"].append(feat.Name)
