@@ -14,6 +14,7 @@ import pythoncom
 
 from ..constants import SwErrors, SwDocumentTypes, SwFileTypes, SwViews
 from ..utils import find_template
+from ..utils.com import com_get
 from ..utils.tree_walk import walk_exhausted
 
 logger = logging.getLogger(__name__)
@@ -372,9 +373,7 @@ class DocumentOperations:
                     return r
             
             docs = []
-            doc = self._sw_app.GetFirstDocument
-            if callable(doc):
-                doc = doc()
+            doc = com_get(self._sw_app, "GetFirstDocument")
 
             walked = 0
             while doc:
@@ -382,12 +381,8 @@ class DocumentOperations:
                     break
                 walked += 1
                 try:
-                    title = doc.GetTitle
-                    if callable(title):
-                        title = title()
-                    doc_type = doc.GetType
-                    if callable(doc_type):
-                        doc_type = doc_type()
+                    title = com_get(doc, "GetTitle")
+                    doc_type = com_get(doc, "GetType")
 
                     type_names = {1: "Part", 2: "Assembly", 3: "Drawing"}
 
@@ -398,8 +393,7 @@ class DocumentOperations:
                 except:
                     pass
 
-                next_doc = doc.GetNext
-                doc = next_doc() if callable(next_doc) else next_doc
+                doc = com_get(doc, "GetNext")
             
             return self._result(True, f"{len(docs)} document(s) open",
                               SwErrors.swSuccess, {"documents": docs})

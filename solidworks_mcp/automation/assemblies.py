@@ -26,6 +26,7 @@ from ..constants import (
     SwMateTypes,
     SwSelectType,
 )
+from ..utils.com import com_get
 from ..utils.tree_walk import walk_exhausted
 
 logger = logging.getLogger(__name__)
@@ -496,18 +497,10 @@ def _select_entity(doc, name: str, append: bool, empty_callout) -> bool:
     return False
 
 
-def _com_get(obj, name: str):
-    """Read a parameterless COM method/property.
-
-    On the dynamic binding, parameterless methods often resolve to their value
-    on attribute access. A returned COM object is itself callable (default
-    member), so ``if callable(x): x()`` would wrongly invoke it — only call
-    plain Python callables (unresolved bound methods).
-    """
-    value = getattr(obj, name)
-    if callable(value) and not hasattr(value, "_oleobj_"):  # not a COM object
-        value = value()
-    return value
+# Kept as a module-local alias: this helper originated here and is used
+# throughout this module. The implementation now lives in utils.com so the
+# document and feature walks share the same COM-safe accessor.
+_com_get = com_get
 
 
 def _get_children(obj) -> list:
